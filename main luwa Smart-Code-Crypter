@@ -1,0 +1,453 @@
+-- Smart-Code-Crypter Creator: Mohammad Usman
+-- Language: AndroLua+ (Lua)
+-- Target: Dedicated Code Encryption Tool with Media, Safety Guard & Clipboard Buffer
+-- Compatibility: Android 8.0+ & All Jieshuo Versions
+-- Version: 3.2 (Runtime Execution & Execution Fix)
+
+require "import"
+import "android.widget.*"
+import "android.view.*"
+import "android.app.*"
+import "android.os.*"
+import "java.io.File"
+import "java.lang.String"
+import "android.content.Context"
+import "android.content.Intent"
+import "android.net.Uri"
+import "android.content.ClipData"
+import "android.media.ToneGenerator"
+import "android.media.AudioManager"
+
+local ctx = service or activity
+if not ctx then return end
+
+-- PATH CONFIGURATIONS
+local pluginsPath = "/storage/emulated/0/解说/Plugins/"
+local toolsPath = "/storage/emulated/0/解说/Tools/"
+local currentSearchPath = pluginsPath
+local securityKeyArray = {85, 142, 63, 219, 94}
+local whatsappNumber = "923261421100"
+
+-- Global States for Settings (Default: Enabled)
+local isToneEnabled = true
+local isVibrateEnabled = true
+local isCopyBeforeCryptEnabled = false
+
+-- Speech Engine
+local function speakText(text)
+  if service and service.speak then
+    service.speak(text)
+  else
+    Toast.makeText(ctx, text, 1).show()
+  end
+end
+
+-- Execution Feedback Engine
+local function triggerFeedback()
+  if isToneEnabled then
+    pcall(function()
+      local toneG = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 100)
+      toneG.startTone(ToneGenerator.TONE_PROP_BEEP, 200)
+    end)
+  end
+  if isVibrateEnabled then
+    pcall(function()
+      local vibrator = ctx.getSystemService(Context.VIBRATOR_SERVICE)
+      if vibrator then
+        if Build.VERSION.SDK_INT >= 26 then
+          vibrator.vibrate(VibrationEffect.createOneShot(150, VibrationEffect.DEFAULT_AMPLITUDE))
+        else
+          vibrator.vibrate(150)
+        end
+      end
+    end)
+  end
+end
+
+-- Clipboard Master Manager
+local function copyToClipboard(label, textData)
+  pcall(function()
+    if Build.VERSION.SDK_INT >= 11 then
+      local clipboard = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+      local clip = ClipData.newPlainText(label, textData)
+      clipboard.setPrimaryClip(clip)
+    else
+      local clipboard = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+      clipboard.setText(textData)
+    end
+  end)
+end
+
+-- EXACT MATCH XOR ENCRYPTION ENGINE
+local function xorMultiByteEncrypt(data, keyArr)
+  local t = {}
+  local keyLen = #keyArr
+  for i = 1, #data do
+    local b = data:byte(i)
+    local k = keyArr[((i - 1) % keyLen) + 1]
+    table.insert(t, string.format("%02x", bit32.bxor(b, k)))
+  end
+  return table.concat(t)
+end
+
+-- DYNAMIC BOOTLOADER WRAPPER TEMPLATE (Optimized for Runtime Execution)
+local function generateBootloader(encryptedPayload)
+  return [[-- Trademark Label: _0xSmartAutoUpdateCore
+local _0xXBoot = "]] .. encryptedPayload .. [["
+local _0xSKeys = {85, 142, 63, 219, 94}
+local t = {}
+local kLen = #_0xSKeys
+local idx = 1
+for i = 1, #_0xXBoot, 2 do
+    local b = tonumber(_0xXBoot:sub(i, i+1), 16)
+    if b then
+        table.insert(t, string.char(bit32.bxor(b, _0xSKeys[((idx - 1) % kLen) + 1])))
+        idx = idx + 1
+    end
+end
+local chunk, err = load(table.concat(t), "=main.lua", "bt", _G)
+if chunk then 
+    pcall(chunk) 
+else
+    print("Runtime Error: " .. tostring(err))
+end]]
+end
+
+-- MAIN USER INTERFACE LAYOUT
+local layout = {
+  ScrollView,
+  layout_width = "fill",
+  layout_height = "fill",
+  fillViewport = true,
+  {
+    LinearLayout,
+    orientation = "vertical",
+    layout_width = "fill",
+    layout_height = "fill",
+    padding = "16dp",
+    {
+      TextView,
+      text = "Smart-Code-Crypter Creator: Mohammad Usman",
+      textColor = 0xFF009688,
+      textSize = "16sp",
+      gravity = "center",
+      layout_width = "fill",
+      layout_height = "wrap",
+      padding = "5dp",
+    },
+    {
+      CheckBox, id = "checkTargetType", text = "Auto target Plugins (Uncheck for Tools)", checked = true, layout_width = "fill", layout_height = "wrap", layout_marginTop = "20dp",
+    },
+    {
+      Button, id = "btnOpenList", text = "Select Target Extension", layout_width = "fill", layout_height = "wrap", layout_marginTop = "15dp",
+    },
+    {
+      TextView, id = "txtSelectedName", text = "No Folder Selected", textColor = 0xFF555555, textSize = "14sp", gravity = "center", layout_width = "fill", layout_height = "wrap", layout_marginTop = "10dp", padding = "5dp",
+    },
+    {
+      Button, id = "btnCrypt", text = "Crypt Code", backgroundColor = 0xFF009688, textColor = 0xFFFFFFFF, layout_width = "fill", layout_height = "wrap", layout_marginTop = "25dp",
+    },
+    {
+      Button, id = "btnSettings", text = "Settings", layout_width = "fill", layout_height = "wrap", layout_marginTop = "10dp",
+    },
+    {
+      Button, id = "btnGoBack", text = "Close Tool", layout_width = "fill", layout_height = "wrap", layout_marginTop = "15dp",
+    },
+  }
+}
+
+local mainDialog = nil
+mainDialog = AlertDialog.Builder(ctx).setView(loadlayout(layout)).create()
+if service then mainDialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) end
+
+mainDialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+mainDialog.setCancelable(false)
+mainDialog.show()
+
+-- SWITCH PATH LOGIC
+checkTargetType.setOnCheckedChangeListener{
+  onCheckedChanged = function(button, isChecked)
+    if isChecked then 
+      btnOpenList.setText("Select Target Extension") 
+      currentSearchPath = pluginsPath
+    else 
+      btnOpenList.setText("Select Target Tool") 
+      currentSearchPath = toolsPath 
+    end
+    txtSelectedName.setText("No Folder Selected")
+  end
+}
+
+-- FOLDER SCANNER
+local function getFolderList(path)
+  local list = {}
+  local files = File(path).listFiles()
+  if files then 
+    for i = 0, #files - 1 do 
+      if files[i].isDirectory() then 
+        local checkMainFile = File(files[i].getAbsolutePath() .. "/main.lua")
+        if checkMainFile.exists() and checkMainFile.isFile() then
+          table.insert(list, tostring(files[i].getName())) 
+        end
+      end 
+    end 
+  end
+  return list
+end
+
+btnOpenList.setOnClickListener{
+  onClick = function(v)
+    local items = getFolderList(currentSearchPath)
+    if #items == 0 then 
+      speakText("No active folders found with main.lua!")
+      return 
+    end
+    local listDialog = AlertDialog.Builder(ctx)
+      .setTitle("Choose Target Folder")
+      .setItems(items, function(dialog, which) 
+        txtSelectedName.setText(items[which + 1]) 
+      end)
+      .create()
+    if service then listDialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) end
+    listDialog.show()
+  end
+}
+
+-- CRYPT PROCESSOR WITH ANTI-RECRYPT GUARD & OPTIONAL CLIPBOARD BUFFER
+btnCrypt.setOnClickListener{
+  onClick = function(v)
+    local selectedFolder = tostring(txtSelectedName.getText()):gsub("^%s*(.-)%s*$", "%1")
+    if selectedFolder == "" or selectedFolder == "No Folder Selected" then
+      speakText("Meherbani karke pehle list se target extension select karein!")
+      return
+    end
+    
+    local targetFolder = currentSearchPath .. selectedFolder
+    local targetMainFile = targetFolder .. "/main.lua"
+    local targetOldFile = targetFolder .. "/old_main.lua"
+    
+    local mainExists = File(targetMainFile).exists()
+    local oldExists = File(targetOldFile).exists()
+    
+    if not mainExists and not oldExists then
+      speakText("Selected folder ke andar koi Lua file nahi mili!")
+      return
+    end
+    
+    local mainRawContent = ""
+    local oldRawContent = ""
+    local isMainAlreadyCrypted = false
+    local isOldAlreadyCrypted = false
+    
+    if mainExists then
+      local rf = io.open(targetMainFile, "r")
+      if rf then
+        mainRawContent = rf:read("*a")
+        rf:close()
+        if mainRawContent:find("_0xSmartAutoUpdateCore") or mainRawContent:find("^xcip:") or mainRawContent:find("_0xXBoot") then
+          isMainAlreadyCrypted = true
+        end
+      end
+    end
+    
+    if oldExists then
+      local rf = io.open(targetOldFile, "r")
+      if rf then
+        oldRawContent = rf:read("*a")
+        rf:close()
+        if oldRawContent:find("_0xSmartAutoUpdateCore") or oldRawContent:find("^xcip:") or oldRawContent:find("_0xXBoot") then
+          isOldAlreadyCrypted = true
+        end
+      end
+    end
+    
+    -- SAFETY CRITICAL CHECK
+    if (mainExists and isMainAlreadyCrypted) or (oldExists and isOldAlreadyCrypted) then
+      speakText("is extension ka code Pahle Se gift ho chuka hai, isse dubara cript nahin kiya Ja Sakta.")
+      return
+    end
+    
+    -- CLIPBOARD BUFFER SWITCH SYSTEM
+    if isCopyBeforeCryptEnabled then
+      local clipboardBuffer = ""
+      if mainExists and mainRawContent ~= "" then
+        clipboardBuffer = clipboardBuffer .. "-- === MAIN.LUA SOURCE ===\n" .. mainRawContent .. "\n\n"
+      end
+      if oldExists and oldRawContent ~= "" then
+        clipboardBuffer = clipboardBuffer .. "-- === OLD_MAIN.LUA SOURCE ===\n" .. oldRawContent .. "\n"
+      end
+      if clipboardBuffer ~= "" then
+        copyToClipboard("SmartCrypter Backup Source", clipboardBuffer)
+      end
+    end
+    
+    local encryptedFilesCount = 0
+    
+    if mainExists and not isMainAlreadyCrypted then
+      local encryptedPayload = xorMultiByteEncrypt(mainRawContent, securityKeyArray)
+      local bootloaderCode = generateBootloader(encryptedPayload)
+      local wf = io.open(targetMainFile, "w")
+      if wf then
+        wf:write(bootloaderCode)
+        wf:close()
+        encryptedFilesCount = encryptedFilesCount + 1
+      end
+    end
+    
+    if oldExists and not isOldAlreadyCrypted then
+      local encryptedPayload = xorMultiByteEncrypt(oldRawContent, securityKeyArray)
+      local bootloaderCode = generateBootloader(encryptedPayload)
+      local wf = io.open(targetOldFile, "w")
+      if wf then
+        wf:write(bootloaderCode)
+        wf:close()
+        encryptedFilesCount = encryptedFilesCount + 1
+      end
+    end
+    
+    if encryptedFilesCount > 0 then
+      triggerFeedback()
+      if encryptedFilesCount == 1 then
+        speakText("Mubarak ho aapki " .. selectedFolder .. " extension ki main lua ki file creep kar di gai hai.")
+      else
+        speakText("Mubarak ho aapki " .. selectedFolder .. " extension ki donon main lua ki file creep kar di gai hain.")
+      end
+    end
+    
+  end
+}
+
+-- SETTINGS & ABOUT SUPPORT SUBSYSTEM
+btnSettings.setOnClickListener{
+  onClick = function(v)
+    local settingsLayout = {
+      LinearLayout,
+      orientation = "vertical",
+      layout_width = "fill",
+      layout_height = "wrap",
+      padding = "20dp",
+      {
+        TextView,
+        text = "Smart-Code-Crypter Settings",
+        textColor = 0xFF009688,
+        textSize = "18sp",
+        gravity = "center",
+        layout_width = "fill",
+        layout_height = "wrap",
+        layout_marginBottom = "15dp",
+      },
+      {
+        Switch, id = "switchTone", text = "Play Sound Tone on Crypt", checked = isToneEnabled, layout_width = "fill", layout_height = "wrap", layout_marginBottom = "10dp",
+      },
+      {
+        Switch, id = "switchVibrate", text = "Vibrate Device on Crypt", checked = isVibrateEnabled, layout_width = "fill", layout_height = "wrap", layout_marginBottom = "10dp",
+      },
+      {
+        Switch, id = "switchCopyBefore", text = "Copy Code to Clipboard before Crypt", checked = isCopyBeforeCryptEnabled, layout_width = "fill", layout_height = "wrap", layout_marginBottom = "20dp",
+      },
+      {
+        Button, id = "btnAboutSupport", text = "About and Support", layout_width = "fill", layout_height = "wrap",
+      },
+      {
+        Button, id = "btnSettingsBack", text = "Go Back", layout_width = "fill", layout_height = "wrap", layout_marginTop = "15dp",
+      },
+    }
+    
+    local settingsDialog = AlertDialog.Builder(ctx).setView(loadlayout(settingsLayout)).create()
+    if service then settingsDialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) end
+    settingsDialog.setCancelable(false)
+    settingsDialog.show()
+    
+    switchTone.setOnCheckedChangeListener{
+      onCheckedChanged = function(b, isChecked) isToneEnabled = isChecked end
+    }
+    
+    switchVibrate.setOnCheckedChangeListener{
+      onCheckedChanged = function(b, isChecked) isVibrateEnabled = isChecked end
+    }
+    
+    switchCopyBefore.setOnCheckedChangeListener{
+      onCheckedChanged = function(b, isChecked) isCopyBeforeCryptEnabled = isChecked end
+    }
+    
+    btnAboutSupport.setOnClickListener{
+      onClick = function(view)
+        local supportLayout = {
+          LinearLayout,
+          orientation = "vertical",
+          layout_width = "fill",
+          layout_height = "wrap",
+          padding = "20dp",
+          {
+            TextView,
+            text = "Smart-Code-Crypter Creator: Mohammad Usman",
+            textColor = 0xFF009688,
+            textSize = "17sp",
+            gravity = "center",
+            layout_width = "fill",
+            layout_height = "wrap",
+          },
+          {
+            TextView,
+            text = "WhatsApp: +" .. whatsappNumber,
+            textColor = 0xFF333333,
+            textSize = "15sp",
+            gravity = "center",
+            layout_width = "fill",
+            layout_height = "wrap",
+            layout_marginTop = "15dp",
+          },
+          {
+            Button, id = "btnCopyWhatsApp", text = "Copy WhatsApp Number", layout_width = "fill", layout_height = "wrap", layout_marginTop = "15dp",
+          },
+          {
+            Button, id = "btnContactWhatsApp", text = "Contact WhatsApp", backgroundColor = 0xFF25D366, textColor = 0xFFFFFFFF, layout_width = "fill", layout_height = "wrap", layout_marginTop = "10dp",
+          },
+          {
+            Button, id = "btnSubBack", text = "Go Back", layout_width = "fill", layout_height = "wrap", layout_marginTop = "15dp",
+          },
+        }
+        
+        local supportDialog = AlertDialog.Builder(ctx).setView(loadlayout(supportLayout)).create()
+        if service then supportDialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) end
+        supportDialog.setCancelable(false)
+        supportDialog.show()
+        
+        btnCopyWhatsApp.setOnClickListener{
+          onClick = function(view)
+            copyToClipboard("WhatsApp Number", whatsappNumber)
+            speakText("WhatsApp number copy ho gaya!")
+          end
+        }
+        
+        btnContactWhatsApp.setOnClickListener{
+          onClick = function(view)
+            local success, err = pcall(function()
+              local url = "https://api.whatsapp.com/send?phone=" .. whatsappNumber
+              local intent = Intent(Intent.ACTION_VIEW)
+              intent.setData(Uri.parse(url))
+              intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+              ctx.startActivity(intent)
+            end)
+            if not success then speakText("WhatsApp open nahi ho saka.") end
+          end
+        }
+        
+        btnSubBack.setOnClickListener{
+          onClick = function(view) supportDialog.dismiss() end
+        }
+      end
+    }
+    
+    btnSettingsBack.setOnClickListener{
+      onClick = function(view) settingsDialog.dismiss() end
+    }
+  end
+}
+
+-- MAIN CLOSE TOOL BUTTON
+btnGoBack.setOnClickListener{
+  onClick = function(v)
+    if mainDialog then mainDialog.dismiss() end
+  end
+}
