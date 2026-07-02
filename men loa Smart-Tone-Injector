@@ -1,0 +1,437 @@
+-- Smart_Tone_Injector_Core
+-- Creator: Mohammad Usman
+-- Language: AndroLua+ (Lua)
+-- Target: Advanced Audio Code Injector for Jieshuo Extensions with Auto-Scanner
+-- Compatibility: Android 8.0+ & All Jieshuo Versions
+
+require "import"
+import "android.widget.*"
+import "android.view.*"
+import "android.app.*"
+import "android.os.*"
+import "java.io.File"
+import "java.lang.String"
+import "android.content.Context"
+import "android.media.ToneGenerator"
+import "android.media.AudioManager"
+import "android.media.MediaPlayer"
+import "android.media.MediaMetadataRetriever"
+import "android.net.Uri"
+import "android.content.Intent"
+
+local ctx = service or activity
+if not ctx then return end
+
+-- PATH CONFIGURATIONS
+local pluginsPath = "/storage/emulated/0/解说/Plugins/"
+local toolsPath = "/storage/emulated/0/解说/Tools/"
+local currentSearchPath = pluginsPath
+local whatsappNumber = "923261421100"
+
+local currentToneType = "builtin"
+local selectedBuiltinId = ToneGenerator.TONE_PROP_BEEP
+local selectedCustomPath = ""
+local globalMediaPlayer = nil
+local scannedTonesList = {}
+local scannedTonesPaths = {}
+local selectedExtensionFolder = ""
+
+local function speakText(text)
+  if service and service.speak then service.speak(text) else Toast.makeText(ctx, text, 1).show() end
+end
+
+local function playTonePreview()
+  if currentToneType == "builtin" then
+    pcall(function() 
+      local toneG = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 100) 
+      toneG.startTone(selectedBuiltinId, 250) 
+    end)
+  elseif currentToneType == "custom" then
+    if selectedCustomPath == "" or not File(selectedCustomPath).exists() then 
+      speakText("Meherbani karke pehle valid audio select karein!") 
+      return 
+    end
+    pcall(function() 
+      if globalMediaPlayer then 
+        globalMediaPlayer.stop() 
+        globalMediaPlayer.release() 
+        globalMediaPlayer = nil 
+      end 
+      globalMediaPlayer = MediaPlayer() 
+      globalMediaPlayer.setDataSource(ctx, Uri.fromFile(File(selectedCustomPath))) 
+      globalMediaPlayer.prepare() 
+      globalMediaPlayer.start() 
+    end)
+  end
+end
+
+local function scanStorageForShortTones(dirPath)
+  local files = File(dirPath).listFiles()
+  if not files then return end
+  for i = 0, #files - 1 do
+    local file = files[i]
+    if file.isDirectory() then
+      local name = tostring(file.getName())
+      if not name:find("^%.") and name ~= "Android" and name ~= "Data" then 
+        scanStorageForShortTones(file.getAbsolutePath()) 
+      end
+    elseif file.isFile() then
+      local path = tostring(file.getAbsolutePath())
+      if path:match("%.mp3$") or path:match("%.wav$") or path:match("%.ogg$") then
+        pcall(function()
+          local retriever = MediaMetadataRetriever()
+          retriever.setDataSource(path)
+          local durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+          retriever.release()
+          if durationStr and tonumber(durationStr) <= 10000 then 
+            table.insert(scannedTonesList, file.getName()) 
+            table.insert(scannedTonesPaths, path) 
+          end
+        end)
+      end
+    end
+  end
+end
+
+local function generateToneCode()
+  if currentToneType == "builtin" then
+    return [[-- Smart_Tone_Injector_Active_Block
+pcall(function() import "android.media.ToneGenerator" import "android.media.AudioManager" local tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 100) tg.startTone(]] .. selectedBuiltinId .. [[, 250) end)
+-- Smart_Tone_Injector_End_Block]]
+  else
+    return [[-- Smart_Tone_Injector_Active_Block
+pcall(function() import "android.media.MediaPlayer" import "android.net.Uri" import "java.io.File" local mp = MediaPlayer() mp.setDataSource(service or activity, Uri.fromFile(File("]] .. selectedCustomPath .. [["))) mp.prepare() mp.start() end)
+-- Smart_Tone_Injector_End_Block]]
+  end
+end
+
+-- Layout Definition
+local layout = {
+  ScrollView, layout_width="fill", layout_height="fill", fillViewport=true,
+  { LinearLayout, orientation="vertical", padding="16dp",
+    { TextView, text="Smart-Tone-Injector Creator: Mohammad Usman", textColor=0xFF009688, textSize="16sp", gravity="center", padding="5dp" },
+    { CheckBox, id="checkTargetType", text="Auto target Plugins (Uncheck for Tools)", checked=true, layout_marginTop="15dp" },
+    { Button, id="btnOpenList", text="Select Target Extension", layout_marginTop="10dp" },
+    { TextView, id="txtSelectedName", text="No Folder Selected", textColor=0xFF555555, textSize="14sp", gravity="center", layout_marginTop="5dp" },
+    { TextView, text="--- Tone Configuration Mode ---", textColor=0xFF333333, textSize="14sp", gravity="center", layout_marginTop="15dp" },
+    { RadioGroup, id="radioToneGroup", orientation="horizontal", layout_marginTop="5dp", gravity="center",
+      { RadioButton, id="radioBuiltin", text="Built-in Tone", checked=true },
+      { RadioButton, id="radioCustom", text="Scanned Tone (<=10s)" },
+    },
+    { Button, id="btnSelectBuiltin", text="Choose Built-in Tone Types" },
+    { Button, id="btnSelectScanned", text="Select From Scanned Storage Tones", visibility=View.GONE },
+    { TextView, id="txtSelectedTonePath", text="No Audio Selected", textColor=0xFF777777, textSize="13sp", gravity="center", layout_marginTop="5dp" },
+    { Button, id="btnPlayTest", text="Play / Test Selected Tone", backgroundColor=0xFF3F51B5, textColor=0xFFFFFFFF, layout_marginTop="12dp" },
+    { Button, id="btnInject", text="Inject Tone into Code", backgroundColor=0xFF009688, textColor=0xFFFFFFFF, layout_marginTop="20dp" },
+    { Button, id="btnRemove", text="Remove Tone from Code", backgroundColor=0xFFFF5722, textColor=0xFFFFFFFF, layout_marginTop="10dp" },
+    { Button, id="btnAbout", text="About & Support", layout_marginTop="10dp" },
+    { Button, id="btnGoBack", text="Close Tool", layout_marginTop="15dp" },
+  }
+}
+
+-- Create Dialog and get references
+local mainDialog = AlertDialog.Builder(ctx).setView(loadlayout(layout)).create()
+local views = {
+  checkTargetType = checkTargetType,
+  btnOpenList = btnOpenList,
+  txtSelectedName = txtSelectedName,
+  radioToneGroup = radioToneGroup,
+  radioBuiltin = radioBuiltin,
+  radioCustom = radioCustom,
+  btnSelectBuiltin = btnSelectBuiltin,
+  btnSelectScanned = btnSelectScanned,
+  txtSelectedTonePath = txtSelectedTonePath,
+  btnPlayTest = btnPlayTest,
+  btnInject = btnInject,
+  btnRemove = btnRemove,
+  btnAbout = btnAbout,
+  btnGoBack = btnGoBack
+}
+
+if service then mainDialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) end
+mainDialog.setCancelable(false)
+mainDialog.show()
+
+-- Get Folder List Function
+local function getFolderList(path)
+  local list = {}
+  local folder = File(path)
+  if folder.exists() then
+    local files = folder.listFiles()
+    if files then
+      for i = 0, #files - 1 do
+        if files[i].isDirectory() then
+          if File(files[i].getAbsolutePath() .. "/main.lua").exists() then
+            table.insert(list, tostring(files[i].getName()))
+          end
+        end
+      end
+    end
+  end
+  return list
+end
+
+-- ============= BUTTON LISTENERS =============
+
+-- 1. Target Type Checkbox
+views.checkTargetType.setOnCheckedChangeListener({
+  onCheckedChanged = function(button, isChecked)
+    if isChecked then 
+      views.btnOpenList.setText("Select Target Extension") 
+      currentSearchPath = pluginsPath
+    else 
+      views.btnOpenList.setText("Select Target Tool") 
+      currentSearchPath = toolsPath 
+    end
+    views.txtSelectedName.setText("No Folder Selected")
+    selectedExtensionFolder = ""
+  end
+})
+
+-- 2. Open List Button
+views.btnOpenList.setOnClickListener({
+  onClick = function(v)
+    local items = getFolderList(currentSearchPath)
+    if #items == 0 then 
+      speakText("No active folders found!") 
+      return 
+    end
+    local listDialog = AlertDialog.Builder(ctx)
+      .setTitle("Choose Target Folder")
+      .setItems(items, function(dialog, which) 
+        selectedExtensionFolder = items[which + 1]
+        views.txtSelectedName.setText(selectedExtensionFolder)
+      end)
+      .create()
+    if service then listDialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) end
+    listDialog.show()
+  end
+})
+
+-- 3. Radio Group for Tone Type
+views.radioToneGroup.setOnCheckedChangeListener({
+  onCheckedChanged = function(group, checkedId)
+    if checkedId == views.radioBuiltin.getId() then
+      currentToneType = "builtin"
+      views.btnSelectScanned.setVisibility(View.GONE)
+      views.btnSelectBuiltin.setVisibility(View.VISIBLE)
+      views.txtSelectedTonePath.setText("Built-in Tone Selected")
+    elseif checkedId == views.radioCustom.getId() then
+      currentToneType = "custom"
+      views.btnSelectScanned.setVisibility(View.VISIBLE)
+      views.btnSelectBuiltin.setVisibility(View.GONE)
+      if #scannedTonesList == 0 then
+        speakText("Scanning storage for short tones...")
+        scanStorageForShortTones("/storage/emulated/0/")
+        if #scannedTonesList == 0 then
+          speakText("No short tones found in storage!")
+        else
+          speakText("Found " .. #scannedTonesList .. " tones")
+        end
+      end
+    end
+  end
+})
+
+-- 4. Built-in Tone Selection
+views.btnSelectBuiltin.setOnClickListener({
+  onClick = function(v)
+    local toneTypes = {
+      "TONE_PROP_BEEP",
+      "TONE_CDMA_ANSWER",
+      "TONE_CDMA_HIGH_L",
+      "TONE_CDMA_HIGH_SS",
+      "TONE_CDMA_LOW_L",
+      "TONE_CDMA_LOW_SS",
+      "TONE_CDMA_MED_L",
+      "TONE_CDMA_MED_SS",
+      "TONE_CDMA_SIGNAL_OFF",
+      "TONE_CDMA_SIGNAL_ON",
+      "TONE_CDMA_NETWORK_BUSY",
+      "TONE_CDMA_NETWORK_CALLWAITING",
+    }
+    
+    local dialog = AlertDialog.Builder(ctx)
+      .setTitle("Choose Tone (12 Confirmed)")
+      .setItems(toneTypes, function(d, which)
+        local toneName = toneTypes[which + 1]
+        local toneId = ToneGenerator[toneName]
+        if toneId then
+          selectedBuiltinId = toneId
+          views.txtSelectedTonePath.setText("✅ " .. toneName)
+          speakText("Selected: " .. toneName)
+          pcall(function()
+            local toneG = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 100)
+            toneG.startTone(toneId, 200)
+          end)
+        else
+          speakText("Tone not available on this device!")
+        end
+      end)
+      .create()
+    if service then dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) end
+    dialog.show()
+  end
+})
+
+-- 5. Scanned Tone Selection
+views.btnSelectScanned.setOnClickListener({
+  onClick = function(v)
+    if #scannedTonesList == 0 then
+      speakText("No scanned tones found. Scan storage first.")
+      return
+    end
+    local dialog = AlertDialog.Builder(ctx)
+      .setTitle("Select Scanned Tone")
+      .setItems(scannedTonesList, function(d, which)
+        selectedCustomPath = scannedTonesPaths[which + 1]
+        views.txtSelectedTonePath.setText("🎵 " .. scannedTonesList[which + 1])
+        speakText("Selected tone: " .. scannedTonesList[which + 1])
+      end)
+      .create()
+    if service then dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) end
+    dialog.show()
+  end
+})
+
+-- 6. Play Test Button
+views.btnPlayTest.setOnClickListener({
+  onClick = function(v)
+    playTonePreview()
+  end
+})
+
+-- 7. Inject Button
+views.btnInject.setOnClickListener({
+  onClick = function(v)
+    if selectedExtensionFolder == "" then
+      speakText("Pehle target extension select karein!")
+      return
+    end
+    
+    local targetPath = currentSearchPath .. selectedExtensionFolder .. "/main.lua"
+    if not File(targetPath).exists() then
+      speakText("main.lua not found in selected folder!")
+      return
+    end
+    
+    local file = io.open(targetPath, "r")
+    if not file then
+      speakText("Cannot read file!")
+      return
+    end
+    local content = file:read("*all")
+    file:close()
+    
+    local pattern = "%-%-% Smart_Tone_Injector_Active_Block.-%-%-% Smart_Tone_Injector_End_Block"
+    content = content:gsub(pattern, "")
+    content = content:gsub("\n\n\n+", "\n\n")
+    
+    local injection = generateToneCode()
+    content = content .. "\n" .. injection
+    
+    file = io.open(targetPath, "w")
+    if not file then
+      speakText("Cannot write file!")
+      return
+    end
+    file:write(content)
+    file:close()
+    
+    speakText("✅ Tone successfully injected into " .. selectedExtensionFolder)
+  end
+})
+
+-- 8. Remove Tone Button (FIXED)
+views.btnRemove.setOnClickListener({
+  onClick = function(v)
+    if selectedExtensionFolder == "" then
+      speakText("Pehle target extension select karein!")
+      return
+    end
+    
+    local targetPath = currentSearchPath .. selectedExtensionFolder .. "/main.lua"
+    if not File(targetPath).exists() then
+      speakText("main.lua not found!")
+      return
+    end
+    
+    local file = io.open(targetPath, "r")
+    if not file then
+      speakText("Cannot read file!")
+      return
+    end
+    local content = file:read("*all")
+    file:close()
+    
+    -- FIXED PATTERN FOR REMOVAL
+    local pattern = "%-%-% Smart_Tone_Injector_Active_Block.-%-%-% Smart_Tone_Injector_End_Block"
+    local newContent, count = content:gsub(pattern, "")
+    
+    if count == 0 then
+      speakText("❌ Koi injected tone nahi mili!")
+      return
+    end
+    
+    -- Clean extra newlines
+    newContent = newContent:gsub("\n\n\n+", "\n\n"):gsub("[\n\r]+$", "")
+    
+    file = io.open(targetPath, "w")
+    if not file then
+      speakText("Cannot write file!")
+      return
+    end
+    file:write(newContent)
+    file:close()
+    
+    speakText("🗑️ Tone removed successfully!")
+  end
+})
+
+-- 9. About & Support Button
+views.btnAbout.setOnClickListener({
+  onClick = function(v)
+    local aboutLayout = {
+      LinearLayout, orientation="vertical", padding="20dp",
+      { TextView, text="About & Support", textSize="18sp", textColor=0xFF009688, gravity="center", layout_marginBottom="15dp" },
+      { TextView, text="1. 👤 Mohammad Usman", textSize="15sp", textColor=0xFF333333, gravity="center", layout_marginBottom="10dp" },
+      { TextView, text="2. 📱 923261421100", textSize="15sp", textColor=0xFF333333, gravity="center", layout_marginBottom="10dp" },
+      { Button, id="btnCopy", text="3. Copy Number", backgroundColor=0xFF2196F3, textColor=0xFFFFFFFF, layout_marginTop="5dp", layout_marginBottom="5dp" },
+      { Button, id="btnContact", text="4. Contact WhatsApp", backgroundColor=0xFF25D366, textColor=0xFFFFFFFF, layout_marginTop="5dp", layout_marginBottom="5dp" },
+      { Button, id="btnCloseAbout", text="5. Go Back", backgroundColor=0xFF607D8B, textColor=0xFFFFFFFF, layout_marginTop="5dp", layout_marginBottom="5dp" }
+    }
+    
+    local aboutDialog = AlertDialog.Builder(ctx).setView(loadlayout(aboutLayout)).create()
+    if service then aboutDialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) end
+    aboutDialog.show()
+    
+    btnCopy.setOnClickListener({ onClick = function()
+      local clipboard = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+      clipboard.setPrimaryClip(android.content.ClipData.newPlainText("WhatsApp", whatsappNumber))
+      speakText("✅ Number copied!")
+    end })
+    
+    btnContact.setOnClickListener({ onClick = function()
+      aboutDialog.dismiss()
+      local intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" .. whatsappNumber))
+      intent.setPackage("com.whatsapp")
+      if intent.resolveActivity(ctx.getPackageManager()) then ctx.startActivity(intent)
+      else ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" .. whatsappNumber))) end
+    end })
+    
+    btnCloseAbout.setOnClickListener({ onClick = function() aboutDialog.dismiss() end })
+  end
+})
+
+-- 10. Close Button
+views.btnGoBack.setOnClickListener({
+  onClick = function(v)
+    if globalMediaPlayer then 
+      pcall(function() globalMediaPlayer.stop() globalMediaPlayer.release() globalMediaPlayer = nil end) 
+    end
+    mainDialog.dismiss()
+  end
+})
+
+-- Initial scan for tones
+scanStorageForShortTones("/storage/emulated/0/")
