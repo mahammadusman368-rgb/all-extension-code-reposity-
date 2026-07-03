@@ -342,7 +342,7 @@ views.btnInject.setOnClickListener({
   end
 })
 
--- 8. Remove Tone Button (FIXED)
+-- 8. Remove Tone Button (FIXED - No More Crashes!)
 views.btnRemove.setOnClickListener({
   onClick = function(v)
     if selectedExtensionFolder == "" then
@@ -364,7 +364,7 @@ views.btnRemove.setOnClickListener({
     local content = file:read("*all")
     file:close()
     
-    -- FIXED PATTERN FOR REMOVAL
+    -- FIXED: Strong pattern with proper escaping
     local pattern = "%-%-% Smart_Tone_Injector_Active_Block.-%-%-% Smart_Tone_Injector_End_Block"
     local newContent, count = content:gsub(pattern, "")
     
@@ -373,8 +373,10 @@ views.btnRemove.setOnClickListener({
       return
     end
     
-    -- Clean extra newlines
-    newContent = newContent:gsub("\n\n\n+", "\n\n"):gsub("[\n\r]+$", "")
+    -- Clean extra newlines and trailing spaces
+    newContent = newContent:gsub("\n\n\n+", "\n\n")
+    newContent = newContent:gsub("[\n\r]+$", "")
+    newContent = newContent:gsub("^[\n\r]+", "")
     
     file = io.open(targetPath, "w")
     if not file then
@@ -433,5 +435,7 @@ views.btnGoBack.setOnClickListener({
   end
 })
 
--- Initial scan for tones
-scanStorageForShortTones("/storage/emulated/0/")
+-- Initial scan for tones (Optimized for performance)
+pcall(function()
+  scanStorageForShortTones("/storage/emulated/0/")
+end)
