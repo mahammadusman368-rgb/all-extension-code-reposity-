@@ -37,22 +37,15 @@ local scannedTonesList = {}
 local scannedTonesPaths = {}
 local selectedExtensionFolder = ""
 local lastFocusedView = nil
+local tempSelectedTone = nil
+local tempSelectedPath = nil
 
 local function speakText(text)
   if service and service.speak then service.speak(text) else Toast.makeText(ctx, text, 1).show() end
 end
 
-local function playTonePreview()
-  if currentToneType == "builtin" then
-    pcall(function() 
-      local toneG = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 100) 
-      toneG.startTone(selectedBuiltinId, 200) 
-    end)
-  elseif currentToneType == "custom" then
-    if selectedCustomPath == "" or not File(selectedCustomPath).exists() then 
-      speakText("Meherbani karke pehle valid audio select karein!") 
-      return 
-    end
+local function playTonePreview(path)
+  if path and path ~= "" then
     pcall(function() 
       if globalMediaPlayer then 
         globalMediaPlayer.stop() 
@@ -60,11 +53,18 @@ local function playTonePreview()
         globalMediaPlayer = nil 
       end 
       globalMediaPlayer = MediaPlayer() 
-      globalMediaPlayer.setDataSource(ctx, Uri.fromFile(File(selectedCustomPath))) 
+      globalMediaPlayer.setDataSource(ctx, Uri.fromFile(File(path))) 
       globalMediaPlayer.prepare() 
       globalMediaPlayer.start() 
     end)
   end
+end
+
+local function playBuiltinTone(toneId)
+  pcall(function() 
+    local toneG = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 100) 
+    toneG.startTone(toneId, 200) 
+  end)
 end
 
 local function scanStorageForShortTones(dirPath)
@@ -93,6 +93,14 @@ local function scanStorageForShortTones(dirPath)
       end
     end
   end
+end
+
+local function isToneAlreadyInjected(filePath)
+  local f = io.open(filePath, "r")
+  if not f then return false end
+  local content = f:read("*all")
+  f:close()
+  return content:find("%-%-% Smart_Tone_Injector_Active_Block") ~= nil
 end
 
 local function generateToneCode()
@@ -138,7 +146,6 @@ local layout = {
     { Button, id="btnSelectBuiltin", text="Choose Built-in Tone Types" },
     { Button, id="btnSelectScanned", text="Select From Scanned Storage Tones", visibility=View.GONE },
     { TextView, id="txtSelectedTonePath", text="No Audio Selected", textColor=0xFF777777, textSize="13sp", gravity="center", layout_marginTop="5dp" },
-    { Button, id="btnPlayTest", text="Play / Test Selected Tone", backgroundColor=0xFF3F51B5, textColor=0xFFFFFFFF, layout_marginTop="12dp" },
     { Button, id="btnInject", text="Inject Tone into Code", backgroundColor=0xFF009688, textColor=0xFFFFFFFF, layout_marginTop="20dp" },
     { Button, id="btnRemove", text="Remove Tone from Code", backgroundColor=0xFFFF5722, textColor=0xFFFFFFFF, layout_marginTop="10dp" },
     { Button, id="btnAbout", text="About & Support", layout_marginTop="10dp" },
@@ -151,7 +158,7 @@ local views = {
   titleText = titleText, checkTargetType = checkTargetType, btnOpenList = btnOpenList,
   txtSelectedName = txtSelectedName, radioToneGroup = radioToneGroup, radioBuiltin = radioBuiltin,
   radioCustom = radioCustom, btnSelectBuiltin = btnSelectBuiltin, btnSelectScanned = btnSelectScanned,
-  txtSelectedTonePath = txtSelectedTonePath, btnPlayTest = btnPlayTest, btnInject = btnInject,
+  txtSelectedTonePath = txtSelectedTonePath, btnInject = btnInject,
   btnRemove = btnRemove, btnAbout = btnAbout, btnGoBack = btnGoBack
 }
 
@@ -179,6 +186,116 @@ local function getFolderList(path)
   return list
 end
 
+-- Go Back button at BOTTOM-RIGHT
+local function showFolderListWithBack(items, title)
+  local listLayout = {
+    LinearLayout, orientation="vertical", padding="10dp",
+    { TextView, text=title, textSize="16sp", textColor=0xFF009688, gravity="center", padding="5dp" },
+    { ListView, id="folderListView", layout_width="fill", layout_height="0dp", layout_weight="1" },
+    { LinearLayout, orientation="horizontal", layout_width="fill", gravity="right", layout_marginTop="10dp",
+      { Button, id="btnGoBackFromFolders", text="Go Back", backgroundColor=0xFF607D8B, textColor=0xFFFFFFFF, layout_width="wrap" }
+    }
+  }
+  local dialog = AlertDialog.Builder(ctx).setView(loadlayout(listLayout)).create()
+  if service then dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) end
+  
+  local adapter = ArrayAdapter(ctx, android.R.layout.simple_list_item_1, items)
+  folderListView.setAdapter(adapter)
+  
+  folderListView.setOnItemClickListener({ onItemClick = function(parent, view, position, id)
+    selectedExtensionFolder = items[position + 1]
+    views.txtSelectedName.setText(selectedExtensionFolder)
+    dialog.dismiss()
+    restoreFocus()
+  end})
+  
+  btnGoBackFromFolders.setOnClickListener({ onClick = function()
+    dialog.dismiss()
+    restoreFocus()
+  end})
+  
+  dialog.show()
+end
+
+-- Tone list with Play on click + Select button
+local function showToneListWithBack(items, paths, title, isBuiltin)
+  tempSelectedTone = nil
+  tempSelectedPath = nil
+  
+  local listLayout = {
+    LinearLayout, orientation="vertical", padding="10dp",
+    { TextView, text=title, textSize="16sp", textColor=0xFF009688, gravity="center", padding="5dp" },
+    { ListView, id="toneListView", layout_width="fill", layout_height="0dp", layout_weight="1" },
+    { LinearLayout, orientation="horizontal", layout_width="fill", gravity="right", layout_marginTop="10dp",
+      { Button, id="btnGoBackFromTones", text="Go Back", backgroundColor=0xFF607D8B, textColor=0xFFFFFFFF, layout_width="wrap", layout_marginRight="10dp" },
+      { Button, id="btnSelectTone", text="Select Tone", backgroundColor=0xFF009688, textColor=0xFFFFFFFF, layout_width="wrap" }
+    }
+  }
+  local dialog = AlertDialog.Builder(ctx).setView(loadlayout(listLayout)).create()
+  if service then dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) end
+  
+  local adapter = ArrayAdapter(ctx, android.R.layout.simple_list_item_1, items)
+  toneListView.setAdapter(adapter)
+  
+  toneListView.setOnItemClickListener({ onItemClick = function(parent, view, position, id)
+    local selectedItem = items[position + 1]
+    tempSelectedTone = selectedItem
+    
+    if isBuiltin then
+      local toneId = ToneGenerator[selectedItem]
+      if toneId then
+        tempSelectedPath = nil
+        selectedBuiltinId = toneId
+        playBuiltinTone(toneId)
+        speakText("Playing: " .. selectedItem)
+      end
+    else
+      if paths and paths[position + 1] then
+        tempSelectedPath = paths[position + 1]
+        playTonePreview(tempSelectedPath)
+        speakText("Playing: " .. selectedItem)
+      end
+    end
+    
+    for i = 0, toneListView.getChildCount() - 1 do
+      local child = toneListView.getChildAt(i)
+      if child then
+        child.setBackgroundColor(0x00000000)
+      end
+    end
+    view.setBackgroundColor(0x33009688)
+  end})
+  
+  btnSelectTone.setOnClickListener({ onClick = function()
+    if tempSelectedTone then
+      if isBuiltin then
+        selectedBuiltinId = ToneGenerator[tempSelectedTone]
+        views.txtSelectedTonePath.setText("✅ " .. tempSelectedTone)
+        currentToneType = "builtin"
+        speakText(tempSelectedTone .. " select ho gayi")
+      else
+        if tempSelectedPath then
+          selectedCustomPath = tempSelectedPath
+          views.txtSelectedTonePath.setText("🎵 " .. tempSelectedTone)
+          currentToneType = "custom"
+          speakText(tempSelectedTone .. " select ho gayi")
+        end
+      end
+      dialog.dismiss()
+      restoreFocus()
+    else
+      speakText("Pehle koi tone select karein!")
+    end
+  end})
+  
+  btnGoBackFromTones.setOnClickListener({ onClick = function()
+    dialog.dismiss()
+    restoreFocus()
+  end})
+  
+  dialog.show()
+end
+
 views.checkTargetType.setOnCheckedChangeListener({ onCheckedChanged = function(button, isChecked)
   if isChecked then views.btnOpenList.setText("Select Target Extension") currentSearchPath = pluginsPath else views.btnOpenList.setText("Select Target Tool") currentSearchPath = toolsPath end
   views.txtSelectedName.setText("No Folder Selected") selectedExtensionFolder = "" restoreFocus()
@@ -187,65 +304,105 @@ end})
 views.btnOpenList.setOnClickListener({ onClick = function(v)
   saveFocus() local items = getFolderList(currentSearchPath)
   if #items == 0 then speakText("No active folders found!") restoreFocus() return end
-  local listDialog = AlertDialog.Builder(ctx).setTitle("Choose Target Folder").setItems(items, function(dialog, which)
-    selectedExtensionFolder = items[which + 1] views.txtSelectedName.setText(selectedExtensionFolder) restoreFocus()
-  end).create()
-  if service then listDialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) end
-  listDialog.setOnDismissListener({ onDismiss = function() restoreFocus() end })
-  listDialog.show()
+  showFolderListWithBack(items, "📁 Choose Target Folder")
 end})
 
 views.radioToneGroup.setOnCheckedChangeListener({ onCheckedChanged = function(group, checkedId)
-  if checkedId == views.radioBuiltin.getId() then currentToneType = "builtin" views.btnSelectScanned.setVisibility(View.GONE) views.btnSelectBuiltin.setVisibility(View.VISIBLE) views.txtSelectedTonePath.setText("Built-in Tone Selected")
-  elseif checkedId == views.radioCustom.getId() then currentToneType = "custom" views.btnSelectScanned.setVisibility(View.VISIBLE) views.btnSelectBuiltin.setVisibility(View.GONE)
-    if #scannedTonesList == 0 then speakText("Scanning storage...") scanStorageForShortTones("/storage/emulated/0/") end
+  if checkedId == views.radioBuiltin.getId() then 
+    currentToneType = "builtin" 
+    views.btnSelectScanned.setVisibility(View.GONE) 
+    views.btnSelectBuiltin.setVisibility(View.VISIBLE) 
+    views.txtSelectedTonePath.setText("Built-in Tone Selected")
+  elseif checkedId == views.radioCustom.getId() then 
+    currentToneType = "custom" 
+    views.btnSelectScanned.setVisibility(View.VISIBLE) 
+    views.btnSelectBuiltin.setVisibility(View.GONE)
+    if #scannedTonesList == 0 then 
+      speakText("Scanning storage...") 
+      scanStorageForShortTones("/storage/emulated/0/") 
+      speakText("Scan complete! " .. #scannedTonesList .. " tones found.")
+    end
   end
   restoreFocus()
 end})
 
+-- FIXED: Built-in tones list - REMOVED 4 tones
 views.btnSelectBuiltin.setOnClickListener({ onClick = function(v)
   saveFocus()
-  local toneTypes = {"TONE_PROP_BEEP", "TONE_CDMA_ANSWER", "TONE_CDMA_HIGH_L", "TONE_CDMA_HIGH_SS", "TONE_CDMA_LOW_L", "TONE_CDMA_LOW_SS", "TONE_CDMA_MED_L", "TONE_CDMA_MED_SS", "TONE_CDMA_SIGNAL_OFF", "TONE_CDMA_SIGNAL_ON", "TONE_CDMA_NETWORK_BUSY", "TONE_CDMA_NETWORK_CALLWAITING"}
-  local dialog = AlertDialog.Builder(ctx).setTitle("Choose Tone").setItems(toneTypes, function(d, which)
-    local toneId = ToneGenerator[toneTypes[which + 1]]
-    if toneId then selectedBuiltinId = toneId views.txtSelectedTonePath.setText("✅ " .. toneTypes[which + 1]) speakText("Selected") end
-    restoreFocus()
-  end).create()
-  if service then dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) end
-  dialog.show()
+  -- REMOVED: TONE_CDMA_MED_SS, TONE_CDMA_HIGH_SS, TONE_CDMA_LOW_SS, TONE_CDMA_SIGNAL_ON
+  local toneTypes = {"TONE_PROP_BEEP", "TONE_CDMA_ANSWER", "TONE_CDMA_HIGH_L", "TONE_CDMA_LOW_L", "TONE_CDMA_MED_L", "TONE_CDMA_SIGNAL_OFF", "TONE_CDMA_NETWORK_BUSY", "TONE_CDMA_NETWORK_CALLWAITING"}
+  showToneListWithBack(toneTypes, nil, "🎵 Choose Built-in Tone", true)
 end})
 
 views.btnSelectScanned.setOnClickListener({ onClick = function(v)
   saveFocus()
-  if #scannedTonesList == 0 then speakText("No tones found.") restoreFocus() return end
-  local dialog = AlertDialog.Builder(ctx).setTitle("Select Tone").setItems(scannedTonesList, function(d, which)
-    selectedCustomPath = scannedTonesPaths[which + 1] views.txtSelectedTonePath.setText("🎵 " .. scannedTonesList[which + 1]) restoreFocus()
-  end).create()
-  if service then dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) end
-  dialog.show()
+  if #scannedTonesList == 0 then 
+    speakText("Scanning storage...") 
+    scanStorageForShortTones("/storage/emulated/0/")
+    if #scannedTonesList == 0 then
+      speakText("No tones found.")
+      restoreFocus()
+      return
+    end
+    speakText("Scan complete! " .. #scannedTonesList .. " tones found.")
+  end
+  showToneListWithBack(scannedTonesList, scannedTonesPaths, "🎵 Select Scanned Tone", false)
 end})
 
-views.btnPlayTest.setOnClickListener({ onClick = function(v) playTonePreview() restoreFocus() end })
-
+-- Inject - Only TTS, No Alert
 views.btnInject.setOnClickListener({ onClick = function(v)
-  if selectedExtensionFolder == "" then speakText("Select target first!") return end
+  if selectedExtensionFolder == "" then 
+    speakText("Pehle target select karein!") 
+    return 
+  end
+  
   local path = currentSearchPath .. selectedExtensionFolder .. "/main.lua"
-  local f = io.open(path, "r") local content = f:read("*all") f:close()
-  content = content:gsub("%-%-% Smart_Tone_Injector_Active_Block.-%-%-% Smart_Tone_Injector_End_Block", "")
-  local wf = io.open(path, "w") wf:write(content .. "\n" .. generateToneCode()) wf:close()
-  speakText("Injected successfully!")
+  
+  if isToneAlreadyInjected(path) then
+    speakText(selectedExtensionFolder .. " extension mein pehle se tone maujud hai. Pehle remove karke naya inject karein.")
+    return
+  end
+  
+  local f = io.open(path, "r") 
+  local content = f:read("*all") 
+  f:close()
+  local wf = io.open(path, "w") 
+  wf:write(content .. "\n" .. generateToneCode()) 
+  wf:close()
+  speakText("Mubarak ho! " .. selectedExtensionFolder .. " extension mein tone successfully lag gayi!")
 end})
 
+-- Remove - Only TTS, No Alert
 views.btnRemove.setOnClickListener({ onClick = function(v)
-  if selectedExtensionFolder == "" then speakText("Select target first!") return end
+  if selectedExtensionFolder == "" then 
+    speakText("Pehle target select karein!") 
+    return 
+  end
+  
   local path = currentSearchPath .. selectedExtensionFolder .. "/main.lua"
-  local f = io.open(path, "r") local content = f:read("*all") f:close()
-  content = content:gsub("%-%-% Smart_Tone_Injector_Active_Block.-%-%-% Smart_Tone_Injector_End_Block", "")
-  local wf = io.open(path, "w") wf:write(content) wf:close()
-  speakText("Removed successfully!")
+  local f = io.open(path, "r")
+  if not f then
+    speakText("File nahi mili!")
+    return
+  end
+  
+  local content = f:read("*all")
+  f:close()
+  
+  local newContent = content:gsub("%-%-% Smart_Tone_Injector_Active_Block.-%-%-% Smart_Tone_Injector_End_Block", "")
+  
+  if newContent == content then
+    speakText(selectedExtensionFolder .. " extension mein koi tone nahi mili")
+    return
+  end
+  
+  local wf = io.open(path, "w")
+  wf:write(newContent)
+  wf:close()
+  speakText(selectedExtensionFolder .. " extension se tone successfully remove kar di gayi!")
 end})
 
--- FIXED ABOUT & SUPPORT
+-- ABOUT & SUPPORT
 views.btnAbout.setOnClickListener({ onClick = function(v)
   saveFocus()
   local aboutLayout = { LinearLayout, orientation="vertical", padding="20dp",
