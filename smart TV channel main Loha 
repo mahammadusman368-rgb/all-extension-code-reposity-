@@ -1,0 +1,663 @@
+require "import"
+import "android.widget.*"
+import "android.media.*"
+import "android.content.Context"
+import "android.content.Intent"
+import "android.net.Uri"
+import "android.content.ClipData"
+import "android.view.ViewGroup"
+import "android.view.accessibility.AccessibilityEvent"
+
+local APP_NAME = "Smart TV Channel"
+local CREATOR = "Mohammad Usman"
+local WHATSAPP_NUMBER = "923261421100"
+
+-- ================= TTS =================
+function speak(text)
+    if service then
+        pcall(function() service.speak(text) end)
+    end
+end
+
+-- ================= Storage =================
+local memoryStore = { favourites = "" }
+
+local function prefGet(prefKey, fallbackValue)
+    local ok, result = pcall(function()
+        return service.getSharedPreferences("SmartTVChannelPrefs", 0).getString(prefKey, fallbackValue)
+    end)
+    if ok and result ~= nil then return result end
+    return memoryStore[prefKey] or fallbackValue
+end
+
+local function prefSet(prefKey, prefValue)
+    pcall(function()
+        local editor = service.getSharedPreferences("SmartTVChannelPrefs", 0).edit()
+        editor.putString(prefKey, prefValue)
+        editor.commit()
+    end)
+    memoryStore[prefKey] = prefValue
+end
+
+-- ================= Favourites =================
+local function serializeFav(list)
+    local parts = {}
+    for i, ch in ipairs(list) do
+        parts[i] = ch.name .. "||" .. ch.url .. "||" .. (ch.category or "Custom")
+    end
+    return table.concat(parts, "::")
+end
+
+local function loadFavourites()
+    local raw = prefGet("favourites", "")
+    local list = {}
+    if raw ~= nil and raw ~= "" then
+        local start = 1
+        while true do
+            local s, e = string.find(raw, "::", start, true)
+            local piece
+            if s == nil then piece = string.sub(raw, start) else piece = string.sub(raw, start, s - 1) end
+            local sep = string.find(piece, "||", 1, true)
+            if sep then
+                local sep2 = string.find(piece, "||", sep + 2, true)
+                local name, url, category
+                if sep2 then
+                    name = string.sub(piece, 1, sep - 1)
+                    url = string.sub(piece, sep + 2, sep2 - 1)
+                    category = string.sub(piece, sep2 + 2)
+                else
+                    name = string.sub(piece, 1, sep - 1)
+                    url = string.sub(piece, sep + 2)
+                    category = "Custom"
+                end
+                table.insert(list, { name = name, url = url, category = category })
+            end
+            if s == nil then break end
+            start = e + 1
+        end
+    end
+    return list
+end
+
+local function saveFavourites(list) prefSet("favourites", serializeFav(list)) end
+
+local function isFavourite(url)
+    local list = loadFavourites()
+    for i, ch in ipairs(list) do if ch.url == url then return true end end
+    return false
+end
+
+local function addFavourite(name, url, category)
+    if not isFavourite(url) then
+        local list = loadFavourites()
+        table.insert(list, { name = name, url = url, category = category or "Custom" })
+        saveFavourites(list)
+        speak(name .. " favourite mein add kar diya gaya hai")
+    else
+        speak(name .. " pehle se favourite mein maujood hai")
+    end
+end
+
+local function removeFavourite(name, url)
+    local list = loadFavourites()
+    local newList = {}
+    local found = false
+    for i, ch in ipairs(list) do
+        if ch.url == url then found = true else table.insert(newList, ch) end
+    end
+    saveFavourites(newList)
+    if found then 
+        speak(name .. " favourite se remove kar diya gaya hai") 
+    end
+end
+
+-- ================= Volume =================
+local function getVolumePercent()
+    local percent = 0
+    pcall(function()
+        local am = service.getSystemService(Context.AUDIO_SERVICE)
+        local cur = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+        local max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        if max > 0 then percent = math.floor((cur / max) * 100) end
+    end)
+    return percent
+end
+
+local function adjustVolume(raise)
+    local ok = pcall(function()
+        local am = service.getSystemService(Context.AUDIO_SERVICE)
+        if raise then
+            am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI)
+        else
+            am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
+        end
+    end)
+    local percent = getVolumePercent()
+    if ok then
+        speak((raise and "Volume badha diya, ab " or "Volume kam kar diya, ab ") .. percent .. " percent hai")
+    else
+        speak("Volume adjust nahin ho saka")
+    end
+end
+
+-- ================= Focus Memory =================
+local focusMemory = {}
+
+-- ================= Video Player =================
+local currentVideoView = nil
+local currentName = nil
+local currentUrl = nil
+
+local function videoErrorMessage(name, extra)
+    if extra == -1004 then return name .. " play nahin ho saka, link ghalat hai ya connection fail hui"
+    elseif extra == -1007 then return name .. " play nahin ho saka, stream ka format sahi nahin hai"
+    elseif extra == -110 then return name .. " play nahin ho saka, connection timeout ho gaya"
+    elseif extra == 200 then return name .. " play nahin ho saka, server ne connection band kar diya"
+    else return name .. " play nahin ho saka, wajah maloom nahin ho saki" end
+end
+
+local function playInVideoView(videoView, name, url)
+    currentName = name
+    currentUrl = url
+    speak(name .. " load ho raha hai")
+    local ok = pcall(function()
+        videoView.setVideoURI(Uri.parse(url))
+        videoView.setOnPreparedListener(MediaPlayer.OnPreparedListener{
+            onPrepared = function(mp)
+                mp.start()
+                speak(name .. " play ho gaya hai")
+            end
+        })
+        videoView.setOnErrorListener(MediaPlayer.OnErrorListener{
+            onError = function(mp, what, extra)
+                speak(videoErrorMessage(name, extra))
+                return true
+            end
+        })
+        videoView.start()
+    end)
+    if not ok then speak(name .. " play nahin ho saka, link sahi format mein nahin hai") end
+end
+
+local function stopVideo()
+    pcall(function()
+        if currentVideoView ~= nil and currentVideoView.isPlaying() then
+            currentVideoView.stopPlayback()
+            if currentName then speak(currentName .. " band ho gaya hai") end
+        end
+    end)
+    currentVideoView = nil
+end
+
+-- ================= Channel Data =================
+local categories = {
+    Pakistan = {
+        News = {
+            {name="Dunya News", url="https://imob.dunyanews.tv/livehd/ngrp:dunyalivehd_2_all/playlist.m3u8"},
+            {name="KTN News", url="https://vodzong.mjunoon.tv:8087/streamtest/KTNNews-151/playlist.m3u8"},
+            {name="Sky News", url="https://lbgo.bozztv.com/ssh101/ssh101/skynews/playlist.m3u8"},
+            {name="Lahore News", url="https://vcdn.dunyanews.tv/lahorelive/ngrp:lnews_1_all/playlist.m3u8"},
+            {name="News 1", url="https://vodzong.mjunoon.tv:8087/streamtest/NEWS1-128/playlist.m3u8"},
+            {name="Such News", url="https://video.primexsports.com/suchnews/live/playlist.m3u8"}
+        },
+        Entertainment = {
+            {name="Aaj Entertainment", url="https://ml-pull-dvc-myco.io:2096/AAJ_ENTERTAINMENT/index.m3u8"},
+            {name="Bol Entertainment", url="https://ml-pull-dvc-myco.io:2096/BOL_ENTERTAINMENT/index.m3u8"},
+            {name="Express Entertainment", url="https://ml-pull-dvc-myco.io:2096/EXPRESS_ENTERTAINMENT/index.m3u8"},
+            {name="Filmax", url="https://s3.ideationtec.live/Filmax/Filmax.m3u8"},
+            {name="Discover Pakistan", url="https://livecdn.live247stream.com/discoverpakistan/web/playlist.m3u8"},
+            {name="Sindh TV", url="https://mumt01.tangotv.in/SINDHTV/index.m3u8"},
+            {name="Zindagi TV", url="https://5ad386ff92705.streamlock.net/live_transcoder/ngrp:zindagitv.stream_all/chunklist.m3u8"},
+            {name="Punjabi TV Canada", url="http://cdn9.live247stream.com/punjabitvcanada/tv/playlist.m3u8"},
+            {name="Kids Arabic", url="https://online.godstands.tv:5443/WebRTCApp/streams/KidsArabic.m3u8"},
+            {name="Arabic Channel", url="https://online.godstands.tv:5443/WebRTCApp/streams/Arabic.m3u8"},
+            {name="Grace TV", url="https://livecdn.live247stream.com/grace/tv/playlist.m3u8"},
+            {name="Isaac TV", url="https://livecdn.live247stream.com/isaac/tv/playlist.m3u8"},
+            {name="Joo Music", url="https://livecdn.live247stream.com/joomusic/tv/playlist.m3u8"},
+            {name="Joshua TV", url="https://livecdn.live247stream.com/joshua/tv/playlist.m3u8"},
+            {name="Praise TV", url="https://livecdn.live247stream.com/praise/tv/playlist.m3u8"},
+            {name="Shine TV Pak", url="https://f-tx-edge-87.christianworldmedia.com/shinetvpak2/mp4:shinetvpak2/playlist.m3u8"}
+        }
+    },
+    India = {
+        News = {
+            {name="Aaj Tak", url="https://feeds.intoday.in/aajtak/api/aajtakhd/master.m3u8"},
+            {name="ABP News", url="https://d1rc86nwwc9fag.cloudfront.net/vglive-sk-472500/abpnews/master.m3u8"},
+            {name="Zee News", url="https://dknttpxmr0dwf.cloudfront.net/index_57.m3u8"},
+            {name="India TV", url="https://pl-indiatvnews.akamaized.net/out/v1/db79179b608641ceaa5a4d0dd0dca8da/index.m3u8"},
+            {name="Republic TV", url="https://d3qs3d2rkhfqrt.cloudfront.net/out/v1/2e31d831f08640ff92f65003bdc89991/index.m3u8"},
+            {name="Times Now", url="https://dztlhgid9me95.cloudfront.net/live-tv/Vidgyor/timesnow/timesnow_master.m3u8"},
+            {name="CNBC TV18", url="https://n18syndication.akamaized.net/bpk-tv/CNBC_TV18_NW18_MOB/output01/index.m3u8"},
+            {name="India Today", url="https://amg00644-amg00644c1-ondemandkorea-amesia-10266.playouts.now.amagi.tv/playlist/amg00644-tvtodaynetworkltdfast-indiatoday-ondemandkoreaamesia/playlist.m3u8"},
+            {name="News24", url="https://vidcdn.vidgyor.com/news24-origin/liveabr/playlist.m3u8"},
+            {name="WION", url="http://vg-zeefta.akamaized.net/ptnr-yupptv/title-wion/v1/master/611d79b11b77e2f571934fd80ca1413453772ac7/20c3c0d9-0256-43fe-bca6-70fdd490b957/main.m3u8"}
+        },
+        Entertainment = {
+            {name="Colors", url="http://149.71.34.166:8000/play/a00c/index.m3u8"},
+            {name="Colors Cineplex", url="http://149.71.34.166:8000/play/a00b/index.m3u8"},
+            {name="Zee TV", url="http://41.205.77.102/ZEE-TV/index.m3u8"},
+            {name="Zee Cinema", url="https://amg17931-zee-amg17931c5-samsung-au-8873.playouts.now.amagi.tv/playlist.m3u8"},
+            {name="StarPlus", url="https://trs1.aynaott.com/starplushd/index.m3u8"},
+            {name="Star Vijay", url="http://149.71.34.166:8000/play/a06i/index.m3u8"},
+            {name="Star Maa", url="http://217.20.112.199:8080/maatv/index.m3u8"},
+            {name="Sony Entertainment Television", url="http://stb-air.wasmer.app/play.php?id=LIVETV_LIVETVCHANNEL_SET_HD&pass=krish-ka&uid=gana-sunega"},
+            {name="Sony Max 2", url="http://149.71.34.166:8000/play/a00z/index.m3u8"},
+            {name="Star Movies", url="http://149.71.34.166:8000/play/a01f/index.m3u8"}
+        }
+    },
+    International = {
+        News = {},
+        Entertainment = {}
+    },
+    Sports = {
+        Cricket = {
+            {name="PK Sports HD", url="https://lbgo.bozztv.com/ssh101/ssh101/pksportshd/playlist.m3u8"},
+            {name="Star Sports 1", url="http://103.253.18.58:8000/play/a00m"},
+            {name="Star Sports 1 Hindi", url="http://103.253.18.58:8000/play/a00t"},
+            {name="Sony Sports Ten 3 Hindi", url="http://103.229.254.25:7001/play/a09q/index.m3u8"},
+            {name="DD Sports", url="http://103.213.31.109:90/ZeeAnmolCinema2/playlist.m3u8"}
+        },
+        Football = {
+            {name="One Golf", url="http://162.250.201.58:6211/pk/ONEGOLF/index.m3u8"},
+            {name="Bozztv Film", url="https://live20.bozztv.com/akamaissh101/ssh101/bsfilm/playlist.m3u8"},
+            {name="Bozztv TV", url="https://lbgo.bozztv.com/ssh101/ssh101/bstv/playlist.m3u8"},
+            {name="Star Sports 2", url="https://tvsen7.aynaott.com/ssport2hd/index.m3u8"},
+            {name="Star Sports 2 Hindi", url="http://103.157.248.140:8000/play/a01m/index.m3u8"}
+        }
+    }
+}
+
+-- ================= Screens =================
+local showMainMenu, showCountryMenu, showSubList, showSportsList, showFavouriteList, showChannelControl, showAddChannel, showAboutSupport, showListViewDialog
+
+-- List Dialog with header and proper focus persistence
+showListViewDialog = function(title, list, key, onBack, onItemClickFunc, categoryDesc)
+    local d = LuaDialog(service)
+    d.setTitle(title)
+
+    local env = {}
+    local layout = {
+        LinearLayout, orientation="vertical", padding="10dp",
+        {
+            TextView, id="headerText", text=(categoryDesc or ""), layout_width="fill", focusable=true, layout_marginBottom="10dp"
+        },
+        {
+            ListView, id="lv", layout_width="fill", layout_height="0dp", layout_weight="1", focusable=true
+        },
+        {
+            Button, id="goBackBtn", text="Go Back", layout_width="fill", layout_marginTop="10dp", focusable=true, onClick=function()
+                d.dismiss()
+                onBack()
+            end
+        }
+    }
+    
+    local rootView = loadlayout(layout, env)
+    d.setView(rootView)
+
+    local adp = ArrayAdapter(service, android.R.layout.simple_list_item_1)
+    for _, ch in ipairs(list) do adp.add(ch.name) end
+    env.lv.setAdapter(adp)
+
+    env.lv.onItemClick = function(l, v, p, id)
+        d.dismiss()
+        focusMemory[key] = p + 1
+        onItemClickFunc(p + 1)
+    end
+
+    d.show()
+
+    pcall(function()
+        local savedIdx = focusMemory[key] or 0
+        if savedIdx == 0 then
+            env.headerText.requestFocus()
+            env.headerText.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED)
+        else
+            env.lv.setSelection(savedIdx - 1)
+            env.lv.requestFocus()
+            env.lv.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED)
+        end
+    end)
+end
+
+-- Channel Control Screen with FIXED focus management
+showChannelControl = function(list, index, returnScreenKey, returnFn, autoPlay, focusTargetId)
+    local ch = list[index]
+    if ch == nil then return end
+
+    local d = LuaDialog(service)
+
+    local isFav = isFavourite(ch.url)
+    local favText = isFav and "Remove From Favourite" or "Add To Favourite"
+
+    local env = {}
+    local layout = {
+        LinearLayout, orientation="vertical", padding="10dp",
+        {
+            ScrollView, layout_width="fill", layout_height="0dp", layout_weight="1",
+            {
+                LinearLayout, orientation="vertical", layout_width="fill",
+                {Button, id="playPauseBtn", text="Play / Pause", layout_width="fill", focusable=true, onClick=function()
+                    local playing = false
+                    pcall(function() playing = currentVideoView.isPlaying() end)
+                    if playing then
+                        pcall(function() currentVideoView.pause() end)
+                        speak(ch.name .. " band ho gaya hai")
+                    else
+                        if currentUrl ~= ch.url then
+                            playInVideoView(currentVideoView, ch.name, ch.url)
+                        else
+                            local ok = pcall(function() currentVideoView.start() end)
+                            if ok then speak(ch.name .. " play ho gaya hai") end
+                        end
+                    end
+                    env[focusTargetId or "playPauseBtn"].requestFocus()
+                end},
+                {Button, id="nextBtn", text="Next", layout_width="fill", focusable=true, onClick=function()
+                    d.dismiss()
+                    local newIndex = (index % #list) + 1
+                    focusMemory[returnScreenKey] = newIndex - 1
+                    showChannelControl(list, newIndex, returnScreenKey, returnFn, true, "nextBtn")
+                end},
+                {Button, id="prevBtn", text="Previous", layout_width="fill", focusable=true, onClick=function()
+                    d.dismiss()
+                    local newIndex = ((index - 2) % #list) + 1
+                    if newIndex < 1 then newIndex = #list end
+                    focusMemory[returnScreenKey] = newIndex - 1
+                    showChannelControl(list, newIndex, returnScreenKey, returnFn, true, "prevBtn")
+                end},
+                {Button, id="volUpBtn", text="Volume Up", layout_width="fill", focusable=true, onClick=function() 
+                    adjustVolume(true)
+                    env[focusTargetId or "volUpBtn"].requestFocus()
+                end},
+                {Button, id="volDownBtn", text="Volume Down", layout_width="fill", focusable=true, onClick=function() 
+                    adjustVolume(false)
+                    env[focusTargetId or "volDownBtn"].requestFocus()
+                end},
+                {Button, id="favBtn", text=favText, layout_width="fill", focusable=true, onClick=function()
+                    if isFav then 
+                        removeFavourite(ch.name, ch.url) 
+                    else 
+                        addFavourite(ch.name, ch.url, "Custom")
+                    end
+                    d.dismiss()
+                    showChannelControl(list, index, returnScreenKey, returnFn, autoPlay, "favBtn")
+                end}
+            }
+        },
+        {Button, id="goBackBtn", text="Go Back", layout_width="fill", layout_marginTop="10dp", focusable=true, onClick=function()
+            stopVideo()
+            d.dismiss()
+            returnFn()
+        end}
+    }
+
+    local rootView = loadlayout(layout, env)
+    
+    local videoView = VideoView(service)
+    currentVideoView = videoView
+    local params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 600)
+    rootView.addView(videoView, 0, params)
+
+    d.setView(rootView)
+    d.show()
+
+    -- FIXED: Focus restoration immediately after show, no autoPlay interference
+    if not autoPlay then
+        local targetId = focusTargetId or "playPauseBtn"
+        if env[targetId] then
+            env[targetId].requestFocus()
+            env[targetId].sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED)
+        end
+    end
+
+    if autoPlay then
+        playInVideoView(videoView, ch.name, ch.url)
+        local targetId = focusTargetId or "playPauseBtn"
+        if env[targetId] then
+            env[targetId].requestFocus()
+            env[targetId].sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED)
+        end
+    else
+        currentUrl = nil
+    end
+end
+
+showFavouriteList = function()
+    local list = loadFavourites()
+    local key = "favourite"
+    showListViewDialog("Favourite Channel", list, key, showMainMenu, function(index)
+        showChannelControl(list, index, key, showFavouriteList, false, "playPauseBtn")
+    end, "Favourite mein total " .. #list .. " channel hain")
+    speak("Favourite mein total " .. #list .. " channel hain")
+end
+
+showSportsList = function()
+    local key = "sports"
+    local d = LuaDialog(service)
+    d.setTitle("Sports Channel")
+
+    local env = {}
+    local layout = {
+        LinearLayout, orientation="vertical", padding="20dp",
+        {
+            ScrollView, layout_width="fill", layout_height="0dp", layout_weight="1",
+            {
+                LinearLayout, orientation="vertical", layout_width="fill", id="menu_container",
+                {Button, text="Cricket Channel", layout_width="fill", focusable=true, onClick=function() d.dismiss(); focusMemory[key] = 0; showSubList("Sports", "Cricket") end},
+                {Button, text="Football Channel", layout_width="fill", focusable=true, onClick=function() d.dismiss(); focusMemory[key] = 1; showSubList("Sports", "Football") end}
+            }
+        },
+        {Button, text="Go Back", layout_width="fill", layout_marginTop="10dp", focusable=true, onClick=function() d.dismiss(); showMainMenu() end}
+    }
+
+    local rootView = loadlayout(layout, env)
+    d.setView(rootView)
+    d.show()
+    
+    pcall(function()
+        local btn = env.menu_container.getChildAt(focusMemory[key] or 0)
+        if btn then 
+            btn.requestFocus() 
+            btn.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED)
+        end
+    end)
+    
+    speak("Sports category choose karne ke liye")
+end
+
+showSubList = function(countryName, subType)
+    local list = categories[countryName][subType]
+    local key = countryName .. "_" .. subType
+    local desc = countryName .. " " .. subType .. " - Total " .. #list .. " channel"
+    
+    showListViewDialog(countryName .. " " .. subType .. " Channel", list, key, function() 
+        if countryName == "Sports" then
+            showSportsList()
+        else
+            showCountryMenu(countryName)
+        end
+    end, function(index)
+        showChannelControl(list, index, key, function() showSubList(countryName, subType) end, false, "playPauseBtn")
+    end, desc)
+end
+
+showCountryMenu = function(countryName)
+    local key = "country_" .. countryName
+    local d = LuaDialog(service)
+    d.setTitle(countryName .. " Channel")
+
+    local env = {}
+    local layout = {
+        LinearLayout, orientation="vertical", padding="20dp",
+        {
+            ScrollView, layout_width="fill", layout_height="0dp", layout_weight="1",
+            {
+                LinearLayout, orientation="vertical", layout_width="fill", id="menu_container",
+                {Button, text="News Channel", layout_width="fill", focusable=true, onClick=function() d.dismiss(); focusMemory[key] = 0; showSubList(countryName, "News") end},
+                {Button, text="Entertainment Channel", layout_width="fill", focusable=true, onClick=function() d.dismiss(); focusMemory[key] = 1; showSubList(countryName, "Entertainment") end}
+            }
+        },
+        {Button, text="Go Back", layout_width="fill", layout_marginTop="10dp", focusable=true, onClick=function() d.dismiss(); showMainMenu() end}
+    }
+
+    local rootView = loadlayout(layout, env)
+    d.setView(rootView)
+    d.show()
+    
+    pcall(function()
+        local btn = env.menu_container.getChildAt(focusMemory[key] or 0)
+        if btn then 
+            btn.requestFocus() 
+            btn.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED)
+        end
+    end)
+end
+
+-- Auto-detect category from channel name keywords
+local function detectCategory(name)
+    local lower = string.lower(name)
+    if string.find(lower, "news") or string.find(lower, "न्यूज") then
+        return "News"
+    elseif string.find(lower, "music") or string.find(lower, "sangeet") or string.find(lower, "संगीत") then
+        return "Music"
+    elseif string.find(lower, "sport") or string.find(lower, "खेल") or string.find(lower, "cricket") or string.find(lower, "football") then
+        return "Sports"
+    else
+        return "Entertainment"
+    end
+end
+
+showAddChannel = function()
+    local d = LuaDialog(service)
+    d.setTitle("Add Channel")
+
+    local nameBox = EditText(service)
+    nameBox.setHint("Channel Ka Naam")
+    nameBox.focusable = true
+    
+    local urlBox = EditText(service)
+    urlBox.setHint("Channel Ka Link (URL)")
+    urlBox.focusable = true
+
+    local env = {}
+    local layout = {
+        LinearLayout, orientation="vertical", padding="20dp",
+        {
+            ScrollView, layout_width="fill", layout_height="0dp", layout_weight="1",
+            {
+                LinearLayout, orientation="vertical", layout_width="fill",
+                {
+                    TextView, text="Channel Ka Naam:", layout_width="fill"
+                },
+                nameBox,
+                {
+                    TextView, text="Channel Ka Link (URL):", layout_width="fill", layout_marginTop="10dp"
+                },
+                urlBox,
+                {Button, text="Save", layout_width="fill", layout_marginTop="10dp", focusable=true, onClick=function()
+                    local name = tostring(nameBox.getText())
+                    local url = tostring(urlBox.getText())
+                    if name == "" or url == "" then
+                        speak("Channel ka naam aur link dono zaroori hain")
+                        return
+                    end
+                    local category = detectCategory(name)
+                    addFavourite(name, url, category)
+                    speak(name .. " channel " .. category .. " category mein add ho gaya hai")
+                    d.dismiss()
+                    showMainMenu()
+                end}
+            }
+        },
+        {Button, text="Go Back", layout_width="fill", layout_marginTop="10dp", focusable=true, onClick=function() d.dismiss(); showMainMenu() end}
+    }
+
+    d.setView(loadlayout(layout, env))
+    d.show()
+    
+    pcall(function()
+        nameBox.requestFocus()
+        nameBox.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED)
+    end)
+end
+
+showAboutSupport = function()
+    local d = LuaDialog(service)
+    d.setTitle("About and Support")
+
+    local layout = {
+        LinearLayout, orientation="vertical", padding="20dp",
+        {
+            ScrollView, layout_width="fill", layout_height="0dp", layout_weight="1",
+            {
+                LinearLayout, orientation="vertical", layout_width="fill",
+                {TextView, text="Creator: " .. CREATOR, focusable=true},
+                {TextView, text="WhatsApp: " .. WHATSAPP_NUMBER, focusable=true},
+                {Button, text="Copy WhatsApp Number", layout_width="fill", focusable=true, onClick=function()
+                    local ok = pcall(function()
+                        local cm = service.getSystemService(Context.CLIPBOARD_SERVICE)
+                        local clip = ClipData.newPlainText("WhatsApp Number", WHATSAPP_NUMBER)
+                        cm.setPrimaryClip(clip)
+                    end)
+                    if ok then speak("WhatsApp number copy ho gaya") else speak("Copy nahin ho saka") end
+                end},
+                {Button, text="Contact WhatsApp", layout_width="fill", focusable=true, onClick=function()
+                    d.dismiss()
+                    local ok = pcall(function()
+                        local intent = Intent(Intent.ACTION_VIEW)
+                        intent.setData(Uri.parse("https://wa.me/" .. WHATSAPP_NUMBER))
+                        service.startActivity(intent)
+                    end)
+                    if not ok then speak("WhatsApp open nahin ho saka") end
+                end}
+            }
+        },
+        {Button, text="Go Back", layout_width="fill", layout_marginTop="10dp", focusable=true, onClick=function() d.dismiss(); showMainMenu() end}
+    }
+
+    d.setView(loadlayout(layout))
+    d.show()
+end
+
+showMainMenu = function()
+    local key = "mainmenu"
+    local d = LuaDialog(service)
+    d.setTitle(APP_NAME .. " | Creator: " .. CREATOR)
+
+    local env = {}
+    local layout = {
+        LinearLayout, orientation="vertical", padding="20dp",
+        {
+            ScrollView, layout_width="fill", layout_height="0dp", layout_weight="1",
+            {
+                LinearLayout, orientation="vertical", layout_width="fill", id="menu_container",
+                {Button, text="Favourite Channel", layout_width="fill", focusable=true, onClick=function() d.dismiss(); focusMemory[key] = 0; showFavouriteList() end},
+                {Button, text="Pakistan Channel", layout_width="fill", focusable=true, onClick=function() d.dismiss(); focusMemory[key] = 1; showCountryMenu("Pakistan") end},
+                {Button, text="India Channel", layout_width="fill", focusable=true, onClick=function() d.dismiss(); focusMemory[key] = 2; showCountryMenu("India") end},
+                {Button, text="International Channel", layout_width="fill", focusable=true, onClick=function() d.dismiss(); focusMemory[key] = 3; showCountryMenu("International") end},
+                {Button, text="Sports Channel", layout_width="fill", focusable=true, onClick=function() d.dismiss(); focusMemory[key] = 4; showSportsList() end},
+                {Button, text="Add Channel", layout_width="fill", focusable=true, onClick=function() d.dismiss(); focusMemory[key] = 5; showAddChannel() end},
+                {Button, text="About and Support", layout_width="fill", focusable=true, onClick=function() d.dismiss(); focusMemory[key] = 6; showAboutSupport() end}
+            }
+        },
+        {Button, text="Go Back", layout_width="fill", layout_marginTop="10dp", focusable=true, onClick=function()
+            stopVideo()
+            d.dismiss()
+        end}
+    }
+
+    local rootView = loadlayout(layout, env)
+    d.setView(rootView)
+    d.show()
+
+    pcall(function()
+        local btn = env.menu_container.getChildAt(focusMemory[key] or 0)
+        if btn then 
+            btn.requestFocus() 
+            btn.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED)
+        end
+    end)
+end
+
+showMainMenu()
