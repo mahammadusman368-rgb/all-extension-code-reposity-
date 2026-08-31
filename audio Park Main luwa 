@@ -1,0 +1,827 @@
+import "android.widget.*"
+import "android.view.*"
+import "android.content.*"
+import "android.os.Environment"
+import "java.io.File"
+import "android.graphics.Color"
+import "android.view.Gravity"
+import "android.net.Uri"
+import "android.media.MediaPlayer"
+
+local Context = luajava.bindClass("android.content.Context")
+local ClipData = luajava.bindClass("android.content.ClipData")
+local Intent = luajava.bindClass("android.content.Intent")
+
+local function copyToClipboard(text, msg)
+    local clipboard = service.getSystemService(Context.CLIPBOARD_SERVICE)
+    local clip = ClipData.newPlainText("CopiedText", text)
+    clipboard.setPrimaryClip(clip)
+    if msg then
+        pcall(function()
+            if accessibility and accessibility.speak then
+                accessibility.speak(msg)
+            end
+        end)
+    end
+end
+
+local function speakText(msg)
+    pcall(function()
+        if accessibility and accessibility.speak then
+            accessibility.speak(msg)
+        end
+    end)
+end
+
+-- Recursive delete so non-empty folders actually get deleted safely.
+local function deleteRecursive(fileObj)
+    local success = false
+    pcall(function()
+        if fileObj.isDirectory() then
+            local children = fileObj.listFiles()
+            if children then
+                local len = 0
+                pcall(function() len = #children end)
+                if len and len > 0 then
+                    for i = 0, len - 1 do
+                        local child = children[i]
+                        if child then
+                            deleteRecursive(child)
+                        end
+                    end
+                end
+            end
+        end
+        success = fileObj.delete()
+    end)
+    return success
+end
+
+-- Fast & Clean File Scanner
+local function getStorageFiles(fileType)
+    local validExtensions = {}
+    if fileType == "document" then
+        validExtensions = {".pdf", ".txt", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
+    elseif fileType == "picture" then
+        validExtensions = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+    elseif fileType == "audio" then
+        validExtensions = {".mp3", ".wav", ".aac", ".m4a", ".ogg", ".flac"}
+    elseif fileType == "video" then
+        validExtensions = {".mp4", ".mkv", ".3gp", ".avi", ".mov"}
+    end
+
+    local fileNames = {}
+    local filePaths = {}
+    
+    local function scanDir(dir)
+        if not dir or not dir.exists() then return end
+        local files = dir.listFiles()
+        if files then
+            local success, len = pcall(function() return #files end)
+            if success and len and len > 0 then
+                for i = 0, len - 1 do
+                    local f = files[i]
+                    if f then
+                        local name = f.getName()
+                        if name and not string.find(name, "^%.") then
+                            local lowerName = string.lower(name)
+                            local isDir = false
+                            pcall(function() isDir = f.isDirectory() end)
+                            
+                            if fileType == "folder" then
+                                if isDir then
+                                    table.insert(fileNames, name)
+                                    table.insert(filePaths, f.getAbsolutePath())
+                                end
+                            else
+                                if isDir then
+                                    scanDir(f)
+                                else
+                                    for _, ext in ipairs(validExtensions) do
+                                        if string.sub(lowerName, -string.len(ext)) == ext then
+                                            table.insert(fileNames, name)
+                                            table.insert(filePaths, f.getAbsolutePath())
+                                            break
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    local root = Environment.getExternalStorageDirectory()
+    scanDir(root)
+    return fileNames, filePaths
+end
+
+-- Path Manager Dialog
+local function openPathManager(dataType)
+    local titleText = ""
+    if dataType == "document" then titleText = "Select Document"
+    elseif dataType == "picture" then titleText = "Select Picture"
+    elseif dataType == "audio" then titleText = "Select Audio"
+    elseif dataType == "video" then titleText = "Select Video"
+    elseif dataType == "folder" then titleText = "Select Folder" end
+
+    local fileNames, filePaths = getStorageFiles(dataType)
+    local totalCount = #fileNames
+
+    if totalCount == 0 then
+        speakText("Is category mein koi file maujud nahi hai.")
+    else
+        speakText("Total " .. totalCount .. " items scan kiye gaye hain.")
+    end
+
+    local listDlg = LuaDialog(service)
+    listDlg.setTitle(titleText .. " (" .. totalCount .. " items)")
+
+    pcall(function()
+        local window = listDlg.getWindow()
+        if window then
+            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
+            window.setGravity(Gravity.BOTTOM)
+        end
+    end)
+
+    local listLayout = {
+        RelativeLayout;
+        layout_width = "match_parent";
+        layout_height = "match_parent";
+        background = "#FFFFFF";
+        {
+            LinearLayout;
+            orientation = "horizontal";
+            id = "buttonPanel";
+            layout_width = "match_parent";
+            layout_height = "wrap_content";
+            layout_alignParentBottom = "true";
+            padding = "1dp";
+            background = "#E0E0E0";
+            {
+                Button;
+                id = "backBtn";
+                text = "Back";
+                textSize = "6sp";
+                layout_width = "wrap_content";
+                layout_height = "wrap_content";
+                layout_weight = "1";
+                layout_marginRight = "1dp";
+            };
+            {
+                Button;
+                id = "selectAllBtn";
+                text = "Select All";
+                textSize = "6sp";
+                layout_width = "wrap_content";
+                layout_height = "wrap_content";
+                layout_weight = "1";
+                layout_marginRight = "1dp";
+            };
+            {
+                Button;
+                id = "unselectAllBtn";
+                text = "Deselect";
+                textSize = "6sp";
+                layout_width = "wrap_content";
+                layout_height = "wrap_content";
+                layout_weight = "1";
+                layout_marginRight = "1dp";
+            };
+            {
+                Button;
+                id = "deleteBtn";
+                text = "Delete";
+                textSize = "6sp";
+                layout_width = "wrap_content";
+                layout_height = "wrap_content";
+                layout_weight = "1";
+                layout_marginRight = "1dp";
+            };
+            {
+                Button;
+                id = "createFolderBtn";
+                text = "Folder";
+                textSize = "6sp";
+                layout_width = "wrap_content";
+                layout_height = "wrap_content";
+                layout_weight = "1";
+                layout_marginRight = "1dp";
+            };
+            {
+                Button;
+                id = "copyPathsBtn";
+                text = "Copy";
+                textSize = "6sp";
+                layout_width = "wrap_content";
+                layout_height = "wrap_content";
+                layout_weight = "1";
+            };
+        };
+        {
+            FrameLayout;
+            id = "videoPreviewContainer";
+            layout_width = "match_parent";
+            layout_height = "0dp";
+            layout_alignParentTop = "true";
+            visibility = "gone";
+            {
+                VideoView;
+                id = "inlineVideoView";
+                layout_width = "match_parent";
+                layout_height = "match_parent";
+            };
+        };
+        {
+            ListView;
+            id = "mediaList";
+            layout_width = "match_parent";
+            layout_height = "match_parent";
+            layout_above = "buttonPanel";
+            layout_below = "videoPreviewContainer";
+        };
+    }
+
+    listDlg.setView(loadlayout(listLayout))
+
+    local function showInlineVideo(path)
+        pcall(function()
+            local density = service.getResources().getDisplayMetrics().density
+            local params = videoPreviewContainer.getLayoutParams()
+            params.height = math.floor(220 * density)
+            videoPreviewContainer.setLayoutParams(params)
+            videoPreviewContainer.setVisibility(View.VISIBLE)
+            inlineVideoView.setVideoPath(path)
+            inlineVideoView.requestFocus()
+            inlineVideoView.start()
+        end)
+    end
+
+    local function hideInlineVideo()
+        pcall(function()
+            inlineVideoView.stopPlayback()
+        end)
+        pcall(function()
+            local params = videoPreviewContainer.getLayoutParams()
+            params.height = 0
+            videoPreviewContainer.setLayoutParams(params)
+            videoPreviewContainer.setVisibility(View.GONE)
+        end)
+    end
+
+    local dataList = ArrayList()
+    if totalCount == 0 then
+        dataList.add("Koi file nahi mili is category mein")
+    else
+        for i = 1, #fileNames do
+            dataList.add(fileNames[i])
+        end
+    end
+
+    local adapter = ArrayAdapter(service, android.R.layout.simple_list_item_multiple_choice, dataList)
+    mediaList.setAdapter(adapter)
+    mediaList.setChoiceMode(ListView.CHOICE_MODE_MULTIPLE)
+
+    local function refreshList(focusIndex)
+        fileNames, filePaths = getStorageFiles(dataType)
+        totalCount = #fileNames
+
+        pcall(function()
+            listDlg.setTitle(titleText .. " (" .. totalCount .. " items)")
+        end)
+
+        dataList.clear()
+        if totalCount == 0 then
+            dataList.add("Koi file nahi mili is category mein")
+        else
+            for i = 1, #fileNames do
+                dataList.add(fileNames[i])
+            end
+        end
+        adapter.notifyDataSetChanged()
+
+        if totalCount > 0 and focusIndex then
+            local newIndex = focusIndex
+            if newIndex > totalCount then newIndex = totalCount end
+            if newIndex < 1 then newIndex = 1 end
+            local zeroBased = newIndex - 1
+            pcall(function()
+                mediaList.setSelection(zeroBased)
+                mediaList.requestFocus()
+            end)
+            speakText(fileNames[newIndex] .. " par focus hai")
+        end
+    end
+
+    local currentMediaPlayer = nil
+
+    mediaList.onItemClick = function(parent, view, position, id)
+        if totalCount == 0 then
+            mediaList.setItemChecked(position, false)
+            speakText("Is category mein koi file maujud nahi hai.")
+            return
+        end
+
+        local idx = position + 1
+        local isChecked = mediaList.isItemChecked(position)
+
+        if dataType == "audio" then
+            if isChecked then
+                speakText(fileNames[idx] .. " selected, audio play ho rahi hai")
+                pcall(function()
+                    if currentMediaPlayer then
+                        currentMediaPlayer.stop()
+                        currentMediaPlayer.release()
+                        currentMediaPlayer = nil
+                    end
+                    currentMediaPlayer = MediaPlayer()
+                    currentMediaPlayer.setDataSource(filePaths[idx])
+                    currentMediaPlayer.prepare()
+                    currentMediaPlayer.start()
+                end)
+            else
+                speakText(fileNames[idx] .. " unselected, audio band ho gayi")
+                pcall(function()
+                    if currentMediaPlayer then
+                        currentMediaPlayer.stop()
+                        currentMediaPlayer.release()
+                        currentMediaPlayer = nil
+                    end
+                end)
+            end
+        elseif dataType == "video" then
+            if isChecked then
+                speakText(fileNames[idx] .. " selected, video play ho rahi hai")
+                showInlineVideo(filePaths[idx])
+            else
+                speakText(fileNames[idx] .. " unselected, video band ho gayi")
+                hideInlineVideo()
+            end
+        else
+            if isChecked then
+                speakText(fileNames[idx] .. " selected")
+            else
+                speakText(fileNames[idx] .. " unselected")
+            end
+        end
+    end
+
+    backBtn.onClick = function()
+        if currentMediaPlayer then
+            pcall(function() currentMediaPlayer.stop() currentMediaPlayer.release() currentMediaPlayer = nil end)
+        end
+        hideInlineVideo()
+        listDlg.dismiss()
+    end
+
+    selectAllBtn.onClick = function()
+        if totalCount == 0 then
+            speakText("Is category mein koi file maujud nahi hai.")
+            return
+        end
+        for i = 0, mediaList.getCount() - 1 do
+            mediaList.setItemChecked(i, true)
+        end
+        speakText("Tamam items select kar diye gaye hain.")
+    end
+
+    unselectAllBtn.onClick = function()
+        for i = 0, mediaList.getCount() - 1 do
+            mediaList.setItemChecked(i, false)
+        end
+        if currentMediaPlayer then
+            pcall(function() currentMediaPlayer.stop() currentMediaPlayer.release() currentMediaPlayer = nil end)
+        end
+        hideInlineVideo()
+        speakText("Tamam selections khatam kar di gayi hain.")
+    end
+
+    deleteBtn.onClick = function()
+        if totalCount == 0 then
+            speakText("Is category mein koi file maujud nahi hai.")
+            return
+        end
+
+        local checkedPositions = mediaList.getCheckedItemPositions()
+        local hasChecked = false
+        if checkedPositions then
+            for i = 0, mediaList.getCount() - 1 do
+                if checkedPositions.get(i) then
+                    hasChecked = true
+                    break
+                end
+            end
+        end
+
+        if not hasChecked then
+            speakText("Pehle kisi item ko select karein.")
+            return
+        end
+
+        local confirmDlg = LuaDialog(service)
+        confirmDlg.setTitle("Delete Confirmation")
+        
+        local confirmLayout = {
+            LinearLayout;
+            orientation = "vertical";
+            padding = "20dp";
+            layout_width = "match_parent";
+            {
+                TextView;
+                text = "Kya aap waqai select kiye gaye items ko permanently delete karna chahte hain?";
+                textSize = "16sp";
+                layout_marginBottom = "20dp";
+                textColor = Color.BLACK;
+            };
+            {
+                LinearLayout;
+                orientation = "horizontal";
+                layout_width = "match_parent";
+                gravity = "right";
+                {
+                    Button;
+                    id = "cancelDelBtn";
+                    text = "Cancel";
+                    layout_width = "wrap_content";
+                    layout_height = "wrap_content";
+                    layout_marginRight = "10dp";
+                };
+                {
+                    Button;
+                    id = "confirmDelBtn";
+                    text = "Delete Confirm";
+                    layout_width = "wrap_content";
+                    layout_height = "wrap_content";
+                };
+            };
+        }
+        confirmDlg.setView(loadlayout(confirmLayout))
+
+        cancelDelBtn.onClick = function()
+            confirmDlg.dismiss()
+            speakText("Delete operation cancel kar diya gaya hai.")
+        end
+
+        confirmDelBtn.onClick = function()
+            confirmDlg.dismiss()
+
+            if currentMediaPlayer then
+                pcall(function() currentMediaPlayer.stop() currentMediaPlayer.release() currentMediaPlayer = nil end)
+            end
+            hideInlineVideo()
+
+            local deletedCount = 0
+            local firstDeletedIndex = nil
+            if checkedPositions then
+                for i = mediaList.getCount() - 1, 0, -1 do
+                    if checkedPositions.get(i) then
+                        local idx = i + 1
+                        if not firstDeletedIndex or idx < firstDeletedIndex then
+                            firstDeletedIndex = idx
+                        end
+                        local path = filePaths[idx]
+                        if path then
+                            local fObj = File(path)
+                            if fObj.exists() then
+                                if deleteRecursive(fObj) then
+                                    deletedCount = deletedCount + 1
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+
+            speakText(deletedCount .. " items permanently delete kar diye gaye hain.")
+            refreshList(firstDeletedIndex)
+        end
+
+        confirmDlg.show()
+    end
+
+    createFolderBtn.onClick = function()
+        if totalCount == 0 then
+            speakText("Is category mein koi file maujud nahi hai.")
+            return
+        end
+
+        local checkedPositions = mediaList.getCheckedItemPositions()
+        local hasChecked = false
+        if checkedPositions then
+            for i = 0, mediaList.getCount() - 1 do
+                if checkedPositions.get(i) then
+                    hasChecked = true
+                    break
+                end
+            end
+        end
+
+        if not hasChecked then
+            speakText("Pehle kisi item ko select karein folder banane ke liye.")
+            return
+        end
+
+        local folderDlg = LuaDialog(service)
+        folderDlg.setTitle("Create Folder & Move Items")
+
+        local folderLayout = {
+            LinearLayout;
+            orientation = "vertical";
+            padding = "20dp";
+            layout_width = "match_parent";
+            {
+                TextView;
+                text = "Naye folder ka naam likhein:";
+                textSize = "15sp";
+                layout_marginBottom = "8dp";
+                textColor = Color.BLACK;
+            };
+            {
+                EditText;
+                id = "folderNameEdit";
+                hint = "Folder Name";
+                layout_width = "match_parent";
+                layout_height = "wrap_content";
+                layout_marginBottom = "20dp";
+                singleLine = true;
+            };
+            {
+                LinearLayout;
+                orientation = "horizontal";
+                layout_width = "match_parent";
+                gravity = "right";
+                {
+                    Button;
+                    id = "cancelFolderBtn";
+                    text = "Cancel";
+                    layout_width = "wrap_content";
+                    layout_height = "wrap_content";
+                    layout_marginRight = "10dp";
+                };
+                {
+                    Button;
+                    id = "saveFolderBtn";
+                    text = "Save";
+                    layout_width = "wrap_content";
+                    layout_height = "wrap_content";
+                };
+            };
+        }
+        folderDlg.setView(loadlayout(folderLayout))
+
+        cancelFolderBtn.onClick = function()
+            folderDlg.dismiss()
+            speakText("Folder creation cancel kar di gayi hai.")
+        end
+
+        saveFolderBtn.onClick = function()
+            local folderName = tostring(folderNameEdit.getText())
+            if folderName == "" or folderName == nil then
+                speakText("Barah-e-karam folder ka naam likhein.")
+                return
+            end
+
+            folderDlg.dismiss()
+            
+            local baseDir = Environment.getExternalStorageDirectory()
+            local newFolder = File(baseDir, folderName)
+            local created = false
+            pcall(function()
+                if not newFolder.exists() then
+                    created = newFolder.mkdirs()
+                else
+                    created = true
+                end
+            end)
+
+            if created then
+                local movedCount = 0
+                local firstMovedIndex = nil
+                if checkedPositions then
+                    for i = 0, mediaList.getCount() - 1 do
+                        if checkedPositions.get(i) then
+                            local idx = i + 1
+                            if not firstMovedIndex or idx < firstMovedIndex then
+                                firstMovedIndex = idx
+                            end
+                            local srcPath = filePaths[idx]
+                            if srcPath then
+                                pcall(function()
+                                    local srcFile = File(srcPath)
+                                    if srcFile.exists() then
+                                        local destFile = File(newFolder, srcFile.getName())
+                                        srcFile.renameTo(destFile)
+                                        movedCount = movedCount + 1
+                                    end
+                                end)
+                            end
+                        end
+                    end
+                end
+                speakText("Folder " .. folderName .. " ban gaya hai aur " .. movedCount .. " items move kar diye gaye hain.")
+                refreshList(firstMovedIndex)
+            else
+                speakText("Folder nahi ban saka.")
+            end
+        end
+
+        folderDlg.show()
+    end
+
+    -- COPY BUTTON: Copies paths and STAYS in the same category dialog
+    copyPathsBtn.onClick = function()
+        if totalCount == 0 then
+            speakText("Is category mein koi file maujud nahi hai.")
+            return
+        end
+
+        local finalPaths = {}
+        local count = 1
+        local checkedPositions = mediaList.getCheckedItemPositions()
+        
+        if checkedPositions then
+            for i = 0, mediaList.getCount() - 1 do
+                if checkedPositions.get(i) then
+                    local idx = i + 1
+                    if filePaths[idx] then
+                        table.insert(finalPaths, "Path " .. count .. ": " .. filePaths[idx])
+                        count = count + 1
+                    end
+                end
+            end
+        end
+
+        if #finalPaths > 0 then
+            local combinedText = table.concat(finalPaths, "\n")
+            copyToClipboard(combinedText)
+            speakText(#finalPaths .. " item ke paths successfully clipboard mein copy hue hain.")
+            -- NOTE: listDlg.dismiss() nahi kiya taaki user usi category mein rahe
+        else
+            speakText("Pehle kisi item ko select to karo.")
+        end
+    end
+
+    listDlg.show()
+end
+
+-- ABOUT DIALOG WITH GO BACK BUTTON
+local function openAboutDialog(mainDlg)
+    local aboutDlg = LuaDialog(service)
+    aboutDlg.setTitle("About & Support")
+
+    local aboutLayout = {
+        LinearLayout;
+        orientation = "vertical";
+        padding = "25dp";
+        layout_width = "match_parent";
+        {
+            TextView;
+            text = "1. Media Path Extractor Pro\nCreator: Mohammad Usman";
+            textSize = "16sp";
+            layout_marginBottom = "10dp";
+            textColor = Color.BLACK;
+        };
+        {
+            TextView;
+            text = "2. WhatsApp Number: +923261421100";
+            textSize = "15sp";
+            layout_marginBottom = "15dp";
+            textColor = Color.DKGRAY;
+        };
+        {
+            LinearLayout;
+            orientation = "horizontal";
+            layout_width = "match_parent";
+            gravity = "right";
+            {
+                Button;
+                id = "copyNumBtn";
+                text = "Copy No";
+                layout_width = "wrap_content";
+                layout_height = "wrap_content";
+                layout_marginRight = "5dp";
+            };
+            {
+                Button;
+                id = "whatsappBtn";
+                text = "WhatsApp";
+                layout_width = "wrap_content";
+                layout_height = "wrap_content";
+                layout_marginRight = "5dp";
+            };
+            {
+                Button;
+                id = "aboutBackBtn";
+                text = "Go Back";
+                layout_width = "wrap_content";
+                layout_height = "wrap_content";
+            };
+        };
+    }
+
+    aboutDlg.setView(loadlayout(aboutLayout))
+
+    copyNumBtn.onClick = function()
+        copyToClipboard("+923261421100", "WhatsApp number clipboard par copy ho gaya hai.")
+    end
+
+    whatsappBtn.onClick = function()
+        aboutDlg.dismiss()
+        mainDlg.dismiss()
+        pcall(function()
+            local intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/923261421100"))
+            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            service.startActivity(intent)
+        end)
+    end
+
+    aboutBackBtn.onClick = function()
+        aboutDlg.dismiss()
+    end
+
+    aboutDlg.show()
+end
+
+local dlg = LuaDialog(service)
+dlg.setTitle("Media Path Extractor Pro - Creator: Mohammad Usman")
+
+local layout = {
+    LinearLayout;
+    orientation = "vertical";
+    padding = "25dp";
+    {
+        Button;
+        text = "Select Document";
+        textSize = "16sp";
+        layout_width = "match_parent";
+        layout_marginBottom = "12dp";
+        onClick = function()
+            openPathManager("document")
+        end;
+    };
+    {
+        Button;
+        text = "Select Picture";
+        textSize = "16sp";
+        layout_width = "match_parent";
+        layout_marginBottom = "12dp";
+        onClick = function()
+            openPathManager("picture")
+        end;
+    };
+    {
+        Button;
+        text = "Select Audio";
+        textSize = "16sp";
+        layout_width = "match_parent";
+        layout_marginBottom = "12dp";
+        onClick = function()
+            openPathManager("audio")
+        end;
+    };
+    {
+        Button;
+        text = "Select Video";
+        textSize = "16sp";
+        layout_width = "match_parent";
+        layout_marginBottom = "12dp";
+        onClick = function()
+            openPathManager("video")
+        end;
+    };
+    {
+        Button;
+        text = "Select Folder";
+        textSize = "16sp";
+        layout_width = "match_parent";
+        layout_marginBottom = "12dp";
+        onClick = function()
+            openPathManager("folder")
+        end;
+    };
+    {
+        Button;
+        text = "About & Support";
+        textSize = "16sp";
+        layout_width = "match_parent";
+        layout_marginBottom = "12dp";
+        onClick = function()
+            openAboutDialog(dlg)
+        end;
+    };
+    {
+        Button;
+        text = "Exit";
+        textSize = "16sp";
+        layout_width = "match_parent";
+        onClick = function()
+            dlg.dismiss()
+        end;
+    };
+}
+
+dlg.setView(loadlayout(layout))
+dlg.show()
